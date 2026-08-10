@@ -127,8 +127,11 @@ def 跑一块(块, python=None):
             capture_output=True, text=True, encoding='utf-8',
             errors='replace', cwd=_ROOT, timeout=120)
         out = (r.stdout or '').strip()
-        err = (r.returncode != 0) or out.startswith('错误:') or ('Traceback' in (r.stderr or ''))
-        if err:
+        # v0.24：段言 src 后端会**静默吞掉运行期错误**（越界/除零都 rc=0 且 stdout 空，
+        # 仅解析错误才 rc≠0），因此成功信号对齐 组合.py `_成功`：rc==0 且 有非空 stdout。
+        ok = (r.returncode == 0) and bool(out) and not out.startswith('错误:') \
+            and ('Traceback' not in (r.stderr or ''))
+        if not ok:
             首行 = (out.splitlines() or [''])[0]
             细 = (out.splitlines() or ['', ''])[1].strip() if len(out.splitlines()) > 1 else ''
             return {'名称': 块.get('名称'), '状态': '失败',
