@@ -170,6 +170,11 @@ class _向量检索:
 # ---------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------
+# v0.25：TF-IDF 模型按库对象缓存（见 semantic_select），避免补召回场景每次全量重建。
+_tfidf缓存 = {}
+_TFIDF缓存上限 = 4
+
+
 def _to_candidate(b, score):
     d = b.get('领域') or []
     if isinstance(d, list):
@@ -205,22 +210,29 @@ def semantic_select(需求, index, top=None):
             pass  # 任何异常都降级到 TF-IDF
 
     # TF-IDF + 同义词 + 领域先验 启发式
+    # v0.25：TF-IDF 模型按库对象缓存。此前每次调用都对全库重建（150 块切词+同义词
+    # 扩展），补召回场景（concept 空候选）下动辄数秒——压测暴露：真实语料里 concept
+    # 空候选触发补召回，单条 13s。库不变则模型不变，复用即可。
     def _领域(b):
         d = b.get('领域') or []
         return ' '.join(d) if isinstance(d, list) else str(d)
 
-    docs = []
-    for b in blocks:
-        text = b.get('名称', '') + ' ' + _领域(b) + ' ' + b.get('描述', '')
-        toks = _切词(text)
-        # 把同义词别名也加进文档，提升召回（文档侧扩展）
-        blob = b.get('描述', '') + b.get('名称', '')
-        for 规范, 别名 in _同义词.items():
-            if any(a in blob for a in 别名):
-                toks.append(规范)
-        docs.append(toks)
-
-    tfidf = _TFIDF(docs)
+    key = id(blocks)
+    if key not in _tfidf缓存:
+        if len(_tfidf缓存) >= _TFIDF缓存上限:
+            _tfidf缓存.clear()
+        docs = []
+        for b in blocks:
+            text = b.get('名称', '') + ' ' + _领域(b) + ' ' + b.get('描述', '')
+            toks = _切词(text)
+            # 把同义词别名也加进文档，提升召回（文档侧扩展）
+            blob = b.get('描述', '') + b.get('名称', '')
+            for 规范, 别名 in _同义词.items():
+                if any(a in blob for a in 别名):
+                    toks.append(规范)
+            docs.append(toks)
+        _tfidf缓存[key] = (_TFIDF(docs), docs)
+    tfidf, docs = _tfidf缓存[key]
     q_vec = tfidf.向量(_扩展同义词(_切词(需求)))
 
     候选 = []
