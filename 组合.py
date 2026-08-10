@@ -21,9 +21,11 @@ v0.16 变更（更细语义召回 + 真实 LLM 校验）：
 """
 
 import argparse
+import json
 import os
 import sys
 import subprocess
+import time
 
 _HERE = os.path.abspath(os.path.dirname(__file__))
 _REPO = os.path.normpath(os.path.join(_HERE, '..'))
@@ -39,6 +41,25 @@ import 计划缓存
 from 校验器 import validate
 from 接线 import 规划, 不可接, 回退步, _推断类型, _匹配度
 from 兜底生成器 import generate_block, 注册, local_rule_block
+
+
+def _定位运行时():
+    """定位段言运行时：优先仓库内 cli/duan.py（开发模式），pip 安装后回退到 duan 命令。
+
+    v1.0 pip 化：duan-blocks 包安装后不再有仓库路径，此时用已安装的 `duan` 命令
+    （pyproject.toml 的 console script）执行 `duan run`。
+    返回可执行路径或命令名。
+    """
+    repo_duan = os.path.join(_REPO, 'cli', 'duan.py')
+    if os.path.isfile(repo_duan):
+        return repo_duan
+    from shutil import which
+    cmd = which('duan')
+    if cmd:
+        return cmd
+    raise RuntimeError(
+        '找不到段言运行时：仓库内 cli/duan.py 不存在，也未安装 duan 命令。'
+        '请先 pip install duan 或在本仓库内运行。')
 
 
 def _全量查表(索引):
@@ -162,12 +183,16 @@ def _兜底(需求, 索引, 候选, 输入值, 块=None, 理由=''):
 
 def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=False,
         链式=False, 阈值=None, 无兜底=False, 无校验=False, 自动层级=False,
-        混合=False, 无缓存=False):
+        混合=False, 无缓存=False, 诊断=None):
     索引 = load_index()
     查表 = _全量查表(索引)
     策略 = ('关键词' if 关键词 else '语义' if 语义
             else '混合' if 混合 else '概念图')
     输入类型 = _推断类型(输入值)
+    # v1.0：诊断 dict（可选）——把「选块/兜底/缓存」的决策过程结构化回填，供 --json 输出。
+    if 诊断 is not None:
+        诊断.update({'需求': 需求, '输入': 输入值, '策略': 策略, '缓存': False,
+                     '候选': [], '是兜底': False, '兜底理由': '', '块数': len(索引.get('块') or [])})
     # 阈值在第 2 步会被就地填成策略默认值（如 0.06）。缓存键必须两头用同一个值，
     # 否则「读时 None / 写时 0.06」永远算不出同一个键 —— 写得进去、读不出来。
     阈值原 = 阈值
@@ -178,12 +203,16 @@ def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=F
         命中 = 计划缓存.读(需求, 索引, 策略=策略, top=top, 阈值=阈值原,
                         链式=链式, 输入类型=输入类型)
         if 命中:
+            if 诊断 is not None:
+                诊断.update({'缓存': True, '缓存次数': 命中['命中次数']})
             print('[缓存] 命中计划（第 %d 次复用）：%s'
                   % (命中['命中次数'], '+'.join(s.get('块', '?')
                                               for s in 命中['步骤'])))
             共享 = [{'名': '赵料', '值': 输入值, '类型': 输入类型}]
             方案 = _造方案(需求, 共享, 命中['步骤'])
             候选 = [_条目转候选(查表[n]) for n in 命中['候选'] if n in 查表]
+            if 诊断 is not None:
+                诊断.update({'候选': 候选, '是兜底': False})
             return 方案, 候选
 
     # 1) 选块
@@ -215,6 +244,8 @@ def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=F
                 需要兜底, 理由 = True, '校验未过：' + v['理由']
 
     if 需要兜底:
+        if 诊断 is not None:
+            诊断['兜底理由'] = 理由
         if 无兜底:
             print('已关闭兜底，无法生成方案：' + 需求)
             return None
@@ -270,16 +301,26 @@ def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=F
         except Exception as e:
             print('[缓存] 写入失败（不影响本次结果）：%s' % e)
 
+    # v1.0：结构化诊断回填（供 --json 消费）
+    if 诊断 is not None:
+        诊断.update({'候选': 候选, '是兜底': bool(方案.get('_兜底')),
+                     '方案步骤': [s.get('块') for s in (方案.get('步骤') or [])]})
+
     return 方案, 候选
 
 
 def _运行_单次(方案, 输出, duan):
-    """合成 → 运行单个段言文件，返回 (rc, stdout, stderr)。供执行闭环重试复用。"""
+    """合成 → 运行单个段言文件，返回 (rc, stdout, stderr)。供执行闭环重试复用。
+
+    `duan` 可能是仓库内 cli/duan.py（需 sys.executable 前缀）或已安装的 `duan`
+    命令名（直接调用）。按是否以 .py 结尾区分。
+    """
     code = synthesize(方案)
     with open(输出, 'w', encoding='utf-8') as f:
         f.write(code)
+    cmd = [sys.executable, duan] if duan.endswith('.py') else [duan]
     try:
-        r = subprocess.run([sys.executable, duan, 'run', 输出],
+        r = subprocess.run(cmd + ['run', 输出],
                            capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:
         return 124, '', '运行超时（>60s）'
@@ -316,24 +357,37 @@ def _cli(argv=None):
     p.add_argument('--混合', action='store_true',
                    help='混合选块：概念图召回（空则 TF-IDF 补召回）+ 并列群语义重排')
     p.add_argument('--无缓存', action='store_true', help='跳过计划缓存，强制重算')
+    p.add_argument('--json', action='store_true',
+                   help='输出结构化 JSON 诊断（需求/策略/候选/兜底理由/缓存/运行结果，机器可读）')
     p.add_argument('-o', '--输出', default=os.path.join(_HERE, '组合结果.duan'))
     args = p.parse_args(argv)
 
+    # v1.0 失败可诊断：--json 时把决策过程结构化回填，替代散落的 print
+    诊断 = {} if args.json else None
+    t0 = time.time()
     res = 组合(args.需求, 输入值=args.输入, top=args.top,
               语义=args.语义, 关键词=args.关键词, 链式=args.链式,
               阈值=args.阈值, 无兜底=args.无兜底, 无校验=args.无校验,
-              自动层级=args.自动层级)
+              自动层级=args.自动层级, 诊断=诊断)
+    if 诊断 is not None:
+        诊断['规划耗时ms'] = round((time.time() - t0) * 1000, 2)
     if not res:
+        if 诊断 is not None:
+            诊断['成功'] = False
+            诊断['失败阶段'] = '规划'
+            print(json.dumps(诊断, ensure_ascii=False, indent=2))
         print('未能生成方案：' + args.需求)
         return 1
     方案, 候选 = res
     选块法 = '关键词' if args.关键词 else ('语义' if args.语义 else 'embedding')
     是兜底 = bool(方案.get('_兜底'))
+    if 诊断 is not None:
+        诊断['选块法'] = 选块法
     print('选块候选（%s%s）：' % (选块法, ' + 兜底生成' if 是兜底 else ''))
     for c in 候选:
         print('  %s（%s）分数=%s' % (c['名称'], c['领域'], c['分数']))
 
-    duan = os.path.join(_REPO, 'cli', 'duan.py')
+    duan = _定位运行时()
     索引 = load_index()
     查表 = _全量查表(索引)
     # 执行闭环：主方案跑挂自动换次优候选重跑，都挂再触发兜底生成。
@@ -348,6 +402,7 @@ def _cli(argv=None):
                 尝试.append(('候选%d:%s' % (i + 1, c['名称']), 备))
     成功 = False
     rc = None
+    运行记录 = []
     for 标签, 方案_i in 尝试:
         print('\n── 运行（%s）──' % 标签)
         rc, out, err = _运行_单次(方案_i, args.输出, duan)
@@ -356,9 +411,13 @@ def _cli(argv=None):
         if _成功(rc, out):
             成功 = True
             print('[执行闭环] %s 运行成功 ✓' % 标签)
+            运行记录.append({'标签': 标签, '成功': True, 'rc': rc,
+                             '输出': out.strip()[-400:]})
             break
         print('[执行闭环] %s 运行失败（rc=%d%s），自动换下一候选…'
               % (标签, rc, '' if out.strip() else ' 且输出为空（疑似运行期静默崩溃）'))
+        运行记录.append({'标签': 标签, '成功': False, 'rc': rc,
+                         '输出': out.strip()[-400:]})
         if err.strip():
             print(err.strip()[-600:])
     if not 成功 and not 是兜底 and not args.无兜底:
@@ -370,10 +429,21 @@ def _cli(argv=None):
             rc, out, err = _运行_单次(方案2, args.输出, duan)
             if out.strip():
                 print(out.rstrip())
-            if not _成功(rc, out):
+            if _成功(rc, out):
+                成功 = True
+                print('[执行闭环] 兜底生成运行成功 ✓')
+                运行记录.append({'标签': '兜底生成', '成功': True, 'rc': rc,
+                                 '输出': out.strip()[-400:]})
+            else:
                 print('[执行闭环] 兜底生成仍未能产出正确结果（需配置真实 LLM）')
+                运行记录.append({'标签': '兜底生成', '成功': False, 'rc': rc,
+                                 '输出': out.strip()[-400:]})
                 if err.strip():
                     print(err.strip()[-600:])
+    if 诊断 is not None:
+        诊断.update({'成功': 成功, '最终rc': rc or 0, '运行': 运行记录})
+        print('\n── JSON 诊断 ──')
+        print(json.dumps(诊断, ensure_ascii=False, indent=2))
     return 0 if 成功 else (rc or 1)
 
 
