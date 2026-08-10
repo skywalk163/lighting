@@ -35,7 +35,7 @@ from 粘合 import synthesize
 from 语义选块 import semantic_select
 from embedding选块 import embedding_select
 from 校验器 import validate
-from 接线 import 规划, 不可接, _推断类型
+from 接线 import 规划, 不可接, 回退步, _推断类型, _匹配度
 from 兜底生成器 import generate_block, 注册, local_rule_block
 
 
@@ -43,12 +43,18 @@ def _全量查表(索引):
     return {b['名称']: b for b in (索引.get('块') or [])}
 
 
-def _可单参调用(b, 类型):
-    """块能否用单个共享输入直接调用：恰好 1 个入参且类型一致。"""
+def _可单参调用(b, 输入类型):
+    """块能否用单个共享输入直接调用：恰好 1 个入参且类型接得上。
+
+    v0.18 起用类型系统 v2 判定（列表[数] vs 列表[文本] 可分辨），不再要求字符串
+    全等。注意这里只做**否决**不做**排序**：类型能说「接不上」，不能说「哪个更
+    符合语义」；候选顺序仍由选块器决定，避免类型匹配度 1.0 的块抢掉语义更贴合但
+    标注为 列表[任意] 的块（如 排序列表）。
+    """
     if not b:
         return False
     ins = b.get('输入') or []
-    return len(ins) == 1 and ins[0].get('类型') == 类型
+    return len(ins) == 1 and _匹配度(ins[0].get('类型'), 输入类型) > 0
 
 
 def _条目转候选(b, 分数=1.0):
@@ -163,6 +169,11 @@ def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=F
                 wired, _ = 规划(_建步骤(候选列表[:top]), 共享, 查表, _默认常数())
                 if 不可接(wired):
                     return None
+                退 = 回退步(wired)
+                if 退:
+                    # 类型上接得通，但没接上游产物 ⇒ 实际退化成并行，明说而不是静默
+                    print('[链式] 这些步骤接不上任何上游产物，已退回共享输入（实为并行）：'
+                          + '、'.join(退))
                 return _造方案(需求, 共享, wired)
 
             # 非链式并行装配：所有步骤共用同一个输入，因此必须过滤掉

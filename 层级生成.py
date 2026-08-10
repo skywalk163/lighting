@@ -34,6 +34,21 @@ def _结果变量(i):
     return '赵果%d' % (i + 1)
 
 
+def _并行输出类型(steps, 块表):
+    """并行 L1 的输出 = 各步结果拼成的列表。
+
+    v0.18：各步输出同类型 T 时精确标注为 列表[T]（如 描述统计 -> 列表[数]），
+    异构时才退化为 列表[任意]。此前一律写死 '列表'，上层块永远只能渐进匹配。
+    """
+    ts = set()
+    for s in steps:
+        b = 块表.get(s.get('块')) or {}
+        out = b.get('输出') or {}
+        ts.add((out.get('类型') if isinstance(out, dict) else None) or '任意')
+    只 = ts.pop() if len(ts) == 1 else '任意'
+    return '列表[%s]' % 只
+
+
 def generate(配方, 库根=_HERE):
     """把配方合成一个 L1+ 积木 .duan，返回 (源码, 索引条目)。"""
     名称 = 配方['名称']
@@ -169,7 +184,7 @@ def 自动织(库根=_HERE):
             '输入': [{'名': spec['入名'], '类型': spec['入类型']}],
             '组成': steps,
             '返回': '[' + ', '.join('赵果%d' % (i + 1) for i in range(n)) + ']',
-            '输出': {'类型': '列表'}, '稳定性': 'generated',
+            '输出': {'类型': _并行输出类型(steps, 块表)}, '稳定性': 'generated',
         }
         源码, 条目 = generate(配方, 库根=库根)
         out = os.path.join(库根, 条目['领域'], 条目['名称'] + '.duan')
@@ -193,7 +208,7 @@ def 自动织(库根=_HERE):
         from collections import Counter
         领域 = Counter(b.get('领域') for b in grp).most_common(1)[0][0]
         入名 = (grp[0].get('输入') or [{}])[0].get('名', '入料')
-        入类型 = sig[0] if sig else '列表'
+        入类型 = sig[0] if sig else '列表[任意]'
         seen = set()
         steps = []
         for b in grp:
@@ -215,7 +230,7 @@ def 自动织(库根=_HERE):
             '输入': [{'名': 入名, '类型': 入类型}],
             '组成': steps,
             '返回': '[' + ', '.join('赵果%d' % (i + 1) for i in range(len(steps))) + ']',
-            '输出': {'类型': '列表'}, '稳定性': 'generated',
+            '输出': {'类型': _并行输出类型(steps, 块表)}, '稳定性': 'generated',
         }
         源码, 条目 = generate(配方, 库根=库根)
         out = os.path.join(库根, 领域, 名 + '.duan')
