@@ -192,6 +192,22 @@ _概念词典 = {
     '格式':     ['格式', '解析'],
 }
 
+# v0.22 自动别名扩充：由 auto_alias.py 生成（见 评估/扰动集 留出段 R21–R40）。
+# 覆盖口语/迂回说法（如「连本带利」「366天」「同时整除」「跳过」「边界值」），
+# 直接喂进 _概念词典，使概念召回面随块元数据自动生长，无需手写维护。
+# 改动后必须跑 扰动跑分 + 跑分 对比，确认留出段提升且主基准不退化。
+_补充路径 = os.path.join(_HERE, '概念别名补充.json')
+try:
+    with open(_补充路径, encoding='utf-8') as _f:
+        _补充 = json.load(_f)
+    for _c, _al in _补充.items():
+        _概念词典.setdefault(_c, [])
+        for _a in _al:
+            if _a not in _概念词典[_c]:
+                _概念词典[_c].append(_a)
+except FileNotFoundError:
+    pass
+
 # 通用领域概念：只共享它们不足以证明块满足需求（与校验器 _通用概念 保持一致）
 _通用领域 = {'数据', '文本', '财务', '中文', '工具', '生成', '网络', '日期', '校验',
              '格式'}
@@ -269,6 +285,9 @@ def 概念向量(text, 权重=1.0, 从属降权=True):
     - 通用领域概念（数据/文本/…）整体降权，避免同域块被拉平成同分；
     - `从属降权=True`（查询侧默认）：全部命中都处于前置步骤位置的概念 ×0.6。
       块侧显式传 False —— 块描述是「能力声明」，不存在意图上的主次之分。
+    - 注：v0.22 曾尝试「具体度加权」（命中别名越长权重越高）以压过抢答短别名，
+      但会改全局排序、拖累主基准（库外召回 1.0→0.6、S05/U01 误选）。已回退，
+      改由 embedding_select 的「具体度决胜」做局部重排（见该函数）。
     """
     v = {}
     for c, spans in _扫描概念带位置(text).items():
@@ -469,20 +488,26 @@ def embedding_select(需求, index, top=None, real=None):
 
     idx = _get(index)
     q = 概念向量(需求)
+    # 查询侧各概念命中别名的最长长度（具体度），仅用于「余弦平局」决胜，
+    # 不改变全局排序——避免 v0.22 早期「具体度加权」拖累主基准（库外召回掉到0.6）。
+    q_spans = _扫描概念带位置(需求)
+    q_spec = {c: max(e - s for s, e in sp) for c, sp in q_spans.items()}
     scored = []
     for b, vec in zip(idx.blocks, idx.vecs):
         # 能力边界约束：只共享通用领域概念（如都带『文本』）不算命中。
         # 「base64 编码」与「转小写」同属文本域，但能力完全不同——此约束让这类
         # 需求直接得到空候选，从而正确走兜底，而不是硬塞一个同域块。
-        if not ((set(q) & set(vec)) - _通用领域):
+        shared = (set(q) & set(vec)) - _通用领域
+        if not shared:
             continue
         s = _余弦(q, vec)
         if s >= EMBED_FLOOR:
-            scored.append((s, b))
-    scored.sort(key=lambda x: -x[0])
+            spec = max((q_spec.get(c, 0) for c in shared), default=0)
+            scored.append((s, spec, b))
+    scored.sort(key=lambda x: (-x[0], -x[1]))
     if not scored:
         return []
-    候选 = [_to_candidate(b, s) for s, b in scored]
+    候选 = [_to_candidate(b, s) for s, spec, b in scored]
     return 候选[:top] if top else 候选
 
 
