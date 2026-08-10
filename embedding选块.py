@@ -502,6 +502,18 @@ def embedding_select(需求, index, top=None, real=None):
             continue
         s = _余弦(q, vec)
         if s >= EMBED_FLOOR:
+            # v0.22+ 复合块覆盖度（门控版）：查询显式表达「要一份同时含多指标的复合结果」
+            # （带 同时/都/两个/一并/一起/以及/各自/各项/多项/既…又 等复合意图标记，且点名
+            # ≥2 个具体概念）时，只满足部分概念的块（如 范围跨度 只含极差）按比例降权，让复合块
+            # （统计双指标=均值+极差）胜出。顺序型需求（算完X再看看Y、先X后Y）不带复合标记，
+            # 不触发，避免把「描述统计」误推到「算均值再看方差」这类两步操作上（S07 教训）。
+            # 单概念查询恒不触发（所有命中块 covered=1.0，乘数恒 1，排序不变）。
+            q_specific = set(q) - _通用领域
+            复合意图 = any(m in 需求 for m in
+                         ('同时', '都', '这两个', '那两个', '两者', '一并', '一起',
+                          '以及', '各自', '各项', '多项', '既', '又', '全都要'))
+            if len(q_specific) > 1 and 复合意图:
+                s = s * (len(shared) / len(q_specific))
             spec = max((q_spec.get(c, 0) for c in shared), default=0)
             scored.append((s, spec, b))
     scored.sort(key=lambda x: (-x[0], -x[1]))
