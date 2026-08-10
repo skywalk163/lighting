@@ -96,6 +96,42 @@ def _造方案(需求, 共享, 步骤):
     }
 
 
+def _装配(需求, 候选列表, 输入值, 查表, 链式, top):
+    """选块候选 → 可运行方案（非链式并行 / 链式契约接线）。
+
+    返回 方案；若链式接线不可接返回 None（交由上层走兜底）。从 组合() 内联逻辑
+    抽出为模块级，供「执行闭环」重试时复用（用单个次优候选重装方案）。
+    """
+    共享 = [{'名': '赵料', '值': 输入值, '类型': _推断类型(输入值)}]
+    if 链式:
+        wired, _ = 规划(_建步骤(候选列表[:top]), 共享, 查表, _默认常数())
+        if 不可接(wired):
+            return None
+        退 = 回退步(wired)
+        if 退:
+            # 类型上接得通，但没接上游产物 ⇒ 实际退化成并行，明说而不是静默
+            print('[链式] 这些步骤接不上任何上游产物，已退回共享输入（实为并行）：'
+                  + '、'.join(退))
+        return _造方案(需求, 共享, wired)
+
+    # 非链式并行装配：所有步骤共用同一个输入，因此必须过滤掉
+    # 『签名接不上』的块——否则会合成出 留分([1,2,3]) 这种类型错误的代码。
+    可用 = [c for c in 候选列表
+            if _可单参调用(查表.get(c['名称']), 共享[0]['类型'])]
+    if not 可用:
+        print('[类型闸门] 候选块都不接受单个「%s」输入，按原候选装配（可能失败）'
+              % 共享[0]['类型'])
+        可用 = 候选列表
+    elif len(可用) < len(候选列表[:top]):
+        跳过 = [c['名称'] for c in 候选列表[:top]
+                if c['名称'] not in [k['名称'] for k in 可用]]
+        print('[类型闸门] 跳过签名不匹配的块：' + '、'.join(跳过))
+    步骤 = _建步骤(可用[:top])
+    for s in 步骤:
+        s['参数'] = ['赵料']
+    return _造方案(需求, 共享, 步骤)
+
+
 def _兜底(需求, 索引, 候选, 输入值, 块=None, 理由=''):
     print('[兜底] %s，调用生成器：%s' % (理由 or '选块未命中', 需求))
     blk = 块 if 块 is not None else generate_block(需求, 索引, 候选=候选, 库根=_HERE)
@@ -188,37 +224,7 @@ def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=F
         方案, 候选 = res
     else:
         # 3) 正常装配
-        def 装配(候选列表):
-            共享 = [{'名': '赵料', '值': 输入值, '类型': _推断类型(输入值)}]
-            if 链式:
-                wired, _ = 规划(_建步骤(候选列表[:top]), 共享, 查表, _默认常数())
-                if 不可接(wired):
-                    return None
-                退 = 回退步(wired)
-                if 退:
-                    # 类型上接得通，但没接上游产物 ⇒ 实际退化成并行，明说而不是静默
-                    print('[链式] 这些步骤接不上任何上游产物，已退回共享输入（实为并行）：'
-                          + '、'.join(退))
-                return _造方案(需求, 共享, wired)
-
-            # 非链式并行装配：所有步骤共用同一个输入，因此必须过滤掉
-            # 『签名接不上』的块——否则会合成出 留分([1,2,3]) 这种类型错误的代码。
-            可用 = [c for c in 候选列表
-                    if _可单参调用(查表.get(c['名称']), 共享[0]['类型'])]
-            if not 可用:
-                print('[类型闸门] 候选块都不接受单个「%s」输入，按原候选装配（可能失败）'
-                      % 共享[0]['类型'])
-                可用 = 候选列表
-            elif len(可用) < len(候选列表[:top]):
-                跳过 = [c['名称'] for c in 候选列表[:top]
-                       if c['名称'] not in [k['名称'] for k in 可用]]
-                print('[类型闸门] 跳过签名不匹配的块：' + '、'.join(跳过))
-            步骤 = _建步骤(可用[:top])
-            for s in 步骤:
-                s['参数'] = ['赵料']
-            return _造方案(需求, 共享, 步骤)
-
-        方案 = 装配(候选)
+        方案 = _装配(需求, 候选, 输入值, 查表, 链式, top)
         if 方案 is None:
             if 无兜底:
                 print('接线不可接且已关闭兜底：' + 需求)
@@ -240,7 +246,7 @@ def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=F
                           % lr['名称'])
                     候选 = [_条目转候选(已有, 1.0)] + \
                         [c for c in 候选 if c['名称'] != lr['名称']]
-                    方案 = 装配(候选) or 方案
+                    方案 = _装配(需求, 候选, 输入值, 查表, 链式, top) or 方案
                 else:
                     res = _兜底(需求, 索引, 候选, 输入值, 块=lr,
                               理由='能力缺失（本地规则）')
@@ -265,6 +271,33 @@ def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=F
             print('[缓存] 写入失败（不影响本次结果）：%s' % e)
 
     return 方案, 候选
+
+
+def _运行_单次(方案, 输出, duan):
+    """合成 → 运行单个段言文件，返回 (rc, stdout, stderr)。供执行闭环重试复用。"""
+    code = synthesize(方案)
+    with open(输出, 'w', encoding='utf-8') as f:
+        f.write(code)
+    try:
+        r = subprocess.run([sys.executable, duan, 'run', 输出],
+                           capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return 124, '', '运行超时（>60s）'
+    except Exception as e:
+        return 1, '', '运行异常：%s' % e
+    return r.returncode, r.stdout, r.stderr
+
+
+def _成功(rc, out):
+    """判断一次段言运行是否真的成功。
+
+    段言 src 后端（cli/duan.py run 默认）会**静默吞掉运行期错误**：
+    `a[99]` 越界、`1 除 0` 等都返回 rc=0 且 stdout 为空。
+    因此『成功』必须同时要求 rc==0 **且** 有非空 stdout —— 正常生成的方案
+    必有「打印」步骤，成功必有输出；只有崩溃才会 rc=0 且空输出。
+    （解析错误仍会返回 rc!=0，被此判定一并拦下。）
+    """
+    return rc == 0 and bool(out.strip())
 
 
 def _cli(argv=None):
@@ -300,18 +333,48 @@ def _cli(argv=None):
     for c in 候选:
         print('  %s（%s）分数=%s' % (c['名称'], c['领域'], c['分数']))
 
-    code = synthesize(方案)
-    with open(args.输出, 'w', encoding='utf-8') as f:
-        f.write(code)
-    print('\n已生成：' + args.输出)
-
     duan = os.path.join(_REPO, 'cli', 'duan.py')
-    print('\n── 运行结果 ──')
-    rc = subprocess.run([sys.executable, duan, 'run', args.输出]).returncode
-    if rc != 0 and not args.无兜底:
-        print('\n[提示] 组合运行失败，可能所选积木并不完全满足需求（语义错配）。'
-              '配置真实 LLM（llm_config.json）后，校验器/兜底生成将能处理此类需求。')
-    return rc
+    索引 = load_index()
+    查表 = _全量查表(索引)
+    # 执行闭环：主方案跑挂自动换次优候选重跑，都挂再触发兜底生成。
+    # 主方案已含 top 候选的装配结果；其余候选各装成单体方案依次试跑。
+    # 注意：段言 src 后端会静默吞掉 运行期错误（rc=0 且 stdout 为空），
+    # 故「成功」判定必须是 rc==0 且 有非空输出（见 _成功）。
+    尝试 = [('主方案', 方案)]
+    if not 是兜底 and not args.链式:
+        for i, c in enumerate(候选[1:], 1):
+            备 = _装配(args.需求, [c], args.输入, 查表, False, args.top)
+            if 备:
+                尝试.append(('候选%d:%s' % (i + 1, c['名称']), 备))
+    成功 = False
+    rc = None
+    for 标签, 方案_i in 尝试:
+        print('\n── 运行（%s）──' % 标签)
+        rc, out, err = _运行_单次(方案_i, args.输出, duan)
+        if out.strip():
+            print(out.rstrip())
+        if _成功(rc, out):
+            成功 = True
+            print('[执行闭环] %s 运行成功 ✓' % 标签)
+            break
+        print('[执行闭环] %s 运行失败（rc=%d%s），自动换下一候选…'
+              % (标签, rc, '' if out.strip() else ' 且输出为空（疑似运行期静默崩溃）'))
+        if err.strip():
+            print(err.strip()[-600:])
+    if not 成功 and not 是兜底 and not args.无兜底:
+        print('\n[执行闭环] 所有候选均失败，触发兜底生成重跑…')
+        res2 = _兜底(args.需求, 索引, 候选, args.输入, 理由='运行期崩溃，候选均不满足')
+        if res2:
+            方案2, _ = res2
+            print('\n── 运行（兜底生成）──')
+            rc, out, err = _运行_单次(方案2, args.输出, duan)
+            if out.strip():
+                print(out.rstrip())
+            if not _成功(rc, out):
+                print('[执行闭环] 兜底生成仍未能产出正确结果（需配置真实 LLM）')
+                if err.strip():
+                    print(err.strip()[-600:])
+    return 0 if 成功 else (rc or 1)
 
 
 if __name__ == '__main__':
