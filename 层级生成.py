@@ -113,6 +113,11 @@ def generate(配方, 库根=_HERE):
         '路径': '%s/%s.duan' % (领域, 名称),
         '导出名': 导出名,
     }
+    # v0.20：配方里的可选契约字段必须透传，否则 自动织 标的 选块可见=False 会被丢掉，
+    # 聚合脚手架又会回到候选池里遮蔽被它包含的精确块（跑分 C04 就是这么退化的）
+    for k in ('选块可见', '样例', '期望'):
+        if k in 配方:
+            条目[k] = 配方[k]
     return 源码, 条目
 
 
@@ -194,21 +199,32 @@ def 自动织(库根=_HERE):
         if _写入索引(条目, 索引路径):
             创建.append(条目['名称'])
 
-    # 2) 自动聚类：按「输入类型签名」把同输入的多块聚成「聚合」L1
-    #    （按类型而非参数名聚类，规避 表/序列 等命名差异；限制 2..6 项避免过宽聚合）
+    # 2) 自动聚类：按「领域 + 完整输入类型签名」把同输入的多块聚成「聚合」L1
+    #    v0.19 两处修正：
+    #      a) 参数元数必须全传——旧版无论签名几元都只传首参，导致生成的 L1 一跑就
+    #         「missing positional argument」（冒烟测试首发即抓到 聚合_工具_3项/聚合_文本_2项）
+    #      b) 按领域分桶——旧版按类型全库聚类，会把 网络/工具 之类无关块拼成一盘杂烩，
+    #         生成的「能力」语义上没有意义
+    跳过 = []
     groups = defaultdict(list)
     for b in 块:
         sig = tuple(p.get('类型') for p in (b.get('输入') or []))
-        groups[sig].append(b)
-    for sig, grp in groups.items():
+        if not sig:
+            continue
+        groups[(b.get('领域'), sig)].append(b)
+    for (领域, sig), grp in groups.items():
         grp = [b for b in grp if b.get('导出名')]
         if not (2 <= len(grp) <= 6):
             continue
-        # 领域取多数；入名取首块的参数名（位置调用，命名差异无碍）
-        from collections import Counter
-        领域 = Counter(b.get('领域') for b in grp).most_common(1)[0][0]
-        入名 = (grp[0].get('输入') or [{}])[0].get('名', '入料')
-        入类型 = sig[0] if sig else '列表[任意]'
+        # 入名取首块的参数名（位置调用，命名差异无碍）；缺名时按位补
+        首入 = grp[0].get('输入') or []
+        入名表 = []
+        for i, t in enumerate(sig):
+            n = (首入[i].get('名') if i < len(首入) else None) or ('入料%d' % (i + 1))
+            while n in 入名表:                      # 同名参数去重
+                n += '乙'
+            入名表.append(n)
+        入类型 = sig[0]
         seen = set()
         steps = []
         for b in grp:
@@ -217,30 +233,63 @@ def 自动织(库根=_HERE):
             seen.add(b['导出名'])
             steps.append({
                 '块': b['名称'], '领域': b['领域'], '导出名': b['导出名'],
-                '路径': b.get('路径', ''), '参数': [入名],
+                '路径': b.get('路径', ''), '参数': list(入名表),
             })
         if len(steps) < 2:
             continue
-        名 = '聚合_%s_%d项' % (领域, len(steps))
+        # 名字必须带上输入签名：只用「领域+项数」会让两组不同签名的块重名，
+        # 结果是 .duan 被后者覆盖、索引却留着前者，契约与实现对不上（体检 E7）
+        类型标签 = ''.join((t or '任意').split('[')[0] for t in sig)
+        名 = '聚合_%s_%s_%d项' % (领域, 类型标签, len(steps))
         配方 = {
             '名称': 名, '领域': 领域, '层级': 1,
             '描述': '自动织成：对%s输入并行执行 %s，返回结果列表' % (
                 入类型, '、'.join(s['块'] for s in steps)),
             '导出名': 名,
-            '输入': [{'名': 入名, '类型': 入类型}],
+            '输入': [{'名': n, '类型': t} for n, t in zip(入名表, sig)],
             '组成': steps,
             '返回': '[' + ', '.join('赵果%d' % (i + 1) for i in range(len(steps))) + ']',
             '输出': {'类型': _并行输出类型(steps, 块表)}, '稳定性': 'generated',
+            # 自动聚合是组合脚手架，不是一项「能力」：让它参与选块只会遮蔽被它包含的精确块
+            '选块可见': False,
         }
         源码, 条目 = generate(配方, 库根=库根)
         out = os.path.join(库根, 领域, 名 + '.duan')
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, 'w', encoding='utf-8') as f:
             f.write(源码)
+        # v0.20 冒烟自检闸门：同输入类型 ≠ 同输入语义。
+        # 「地址转数 + 域名提取」都接文本，并联后无论喂什么都必崩一个；
+        # 「JSON解析 + 键值解析」同理。织完先真跑一次，跑不通就不注册。
+        诊 = _冒烟自检(条目, 库根)
+        if 诊 is not None:
+            跳过.append((名, 诊))
+            continue
         if _写入索引(条目, 索引路径):
             创建.append(名)
 
+    if 跳过:
+        print('[自动织] 冒烟未过、未注册：%s'
+              % '、'.join('%s(%s)' % (n, d) for n, d in 跳过))
     return 创建
+
+
+def _冒烟自检(条目, 库根):
+    """真跑一次织出来的块。通过返回 None，否则返回简短原因。"""
+    try:
+        评估目录 = os.path.join(库根, '评估')
+        if 评估目录 not in sys.path:
+            sys.path.insert(0, 评估目录)
+        import 冒烟 as _smoke
+    except Exception:
+        return None      # 冒烟模块不可用时不阻断织造（退化成 v0.19 行为）
+    try:
+        r = _smoke.跑一块(条目)
+    except Exception as e:
+        return '冒烟异常 %s' % e
+    if r.get('状态') == '通过':
+        return None
+    return ('%s %s' % (r.get('状态'), r.get('详情') or ''))[:80]
 
 
 def _cli(argv=None):
