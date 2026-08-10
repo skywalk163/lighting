@@ -43,7 +43,8 @@ from embedding选块 import embedding_select, _真向量可用  # noqa: E402
 from 校验器 import validate                          # noqa: E402
 from 兜底生成器 import local_rule_block               # noqa: E402
 
-_默认阈值 = {'embedding': 0.06, '概念图': 0.06, '语义': 0.12, '关键词': 3.0}
+_默认阈值 = {'embedding': 0.06, '概念图': 0.06, '混合': 0.06,
+             '语义': 0.12, '关键词': 3.0}
 
 
 def 基准路径():
@@ -62,6 +63,9 @@ def 选块(需求, 索引, 策略, top):
         return semantic_select(需求, 索引, top=top)
     if 策略 == '概念图':
         return embedding_select(需求, 索引, top=top, real=False)
+    if 策略 == '混合':
+        from 混合选块 import hybrid_select
+        return hybrid_select(需求, 索引, top=top)
     return embedding_select(需求, 索引, top=top)
 
 
@@ -215,7 +219,7 @@ def 打印报告(报告, 详细=False):
 def _cli(argv=None):
     p = argparse.ArgumentParser(description='段言积木基准跑分 v1.0')
     p.add_argument('--策略', default='embedding',
-                   choices=['embedding', '概念图', '语义', '关键词'])
+                   choices=['embedding', '概念图', '混合', '语义', '关键词'])
     p.add_argument('--top', type=int, default=3)
     p.add_argument('--阈值', type=float, default=None)
     p.add_argument('--无校验', action='store_true')

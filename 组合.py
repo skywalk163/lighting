@@ -34,6 +34,8 @@ from 选块 import select_blocks, load_index
 from 粘合 import synthesize
 from 语义选块 import semantic_select
 from embedding选块 import embedding_select
+from 混合选块 import hybrid_select
+import 计划缓存
 from 校验器 import validate
 from 接线 import 规划, 不可接, 回退步, _推断类型, _匹配度
 from 兜底生成器 import generate_block, 注册, local_rule_block
@@ -75,7 +77,7 @@ def _默认阈值(关键词, 语义):
         return 3.0
     if 语义:
         return 0.12
-    return 0.06  # embedding 概念图（余弦，已内置 0.08 地板）
+    return 0.06  # embedding 概念图 / 混合（余弦，已内置 0.08 地板）
 
 
 def _建步骤(选中):
@@ -123,15 +125,38 @@ def _兜底(需求, 索引, 候选, 输入值, 块=None, 理由=''):
 
 
 def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=False,
-        链式=False, 阈值=None, 无兜底=False, 无校验=False, 自动层级=False):
+        链式=False, 阈值=None, 无兜底=False, 无校验=False, 自动层级=False,
+        混合=False, 无缓存=False):
     索引 = load_index()
     查表 = _全量查表(索引)
+    策略 = ('关键词' if 关键词 else '语义' if 语义
+            else '混合' if 混合 else '概念图')
+    输入类型 = _推断类型(输入值)
+    # 阈值在第 2 步会被就地填成策略默认值（如 0.06）。缓存键必须两头用同一个值，
+    # 否则「读时 None / 写时 0.06」永远算不出同一个键 —— 写得进去、读不出来。
+    阈值原 = 阈值
+
+    # 0) 计划缓存：同一需求 + 同一库 + 同一策略 ⇒ 选块/校验/接线的结论必然相同。
+    #    库指纹变了（兜底生成新块、契约改动）缓存自动整体作废，不会拿旧方案硬套。
+    if not 无缓存:
+        命中 = 计划缓存.读(需求, 索引, 策略=策略, top=top, 阈值=阈值原,
+                        链式=链式, 输入类型=输入类型)
+        if 命中:
+            print('[缓存] 命中计划（第 %d 次复用）：%s'
+                  % (命中['命中次数'], '+'.join(s.get('块', '?')
+                                              for s in 命中['步骤'])))
+            共享 = [{'名': '赵料', '值': 输入值, '类型': 输入类型}]
+            方案 = _造方案(需求, 共享, 命中['步骤'])
+            候选 = [_条目转候选(查表[n]) for n in 命中['候选'] if n in 查表]
+            return 方案, 候选
 
     # 1) 选块
     if 关键词:
         候选 = select_blocks(需求, 索引, top=top)
     elif 语义:
         候选 = semantic_select(需求, 索引, top=top)
+    elif 混合:
+        候选 = hybrid_select(需求, 索引, top=top)
     else:
         候选 = embedding_select(需求, 索引, top=top)
 
@@ -229,6 +254,16 @@ def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=F
         if 建:
             print('[自动层级] 新建 L1 积木：' + '、'.join(建))
 
+    # 6) 落缓存。兜底/自动层级刚改过库，这里重新 load 一次让库指纹对上新状态，
+    #    否则写进去的条目下一次必然因指纹不符而作废。
+    if not 无缓存:
+        try:
+            计划缓存.写(需求, load_index(), 方案['步骤'], 候选, 策略=策略,
+                      top=top, 阈值=阈值原, 链式=链式, 输入类型=输入类型,
+                      兜底=bool(方案.get('_兜底')))
+        except Exception as e:
+            print('[缓存] 写入失败（不影响本次结果）：%s' % e)
+
     return 方案, 候选
 
 
@@ -245,6 +280,9 @@ def _cli(argv=None):
     p.add_argument('--无兜底', action='store_true', help='关闭 LLM 兜底')
     p.add_argument('--无校验', action='store_true', help='跳过运行前校验器')
     p.add_argument('--自动层级', action='store_true', help='把 生成/ 积木自动织成 L1+')
+    p.add_argument('--混合', action='store_true',
+                   help='混合选块：概念图召回（空则 TF-IDF 补召回）+ 并列群语义重排')
+    p.add_argument('--无缓存', action='store_true', help='跳过计划缓存，强制重算')
     p.add_argument('-o', '--输出', default=os.path.join(_HERE, '组合结果.duan'))
     args = p.parse_args(argv)
 
