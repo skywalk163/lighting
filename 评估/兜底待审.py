@@ -15,15 +15,16 @@ import os, sys, json, argparse, importlib.util
 _LIB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _LIB)
 
-兜 = importlib.util.spec_from_file_location("兜", os.path.join(_LIB, '兜底生成器.py'))
-兜 = importlib.util.module_from_spec(兜); 兜.loader.exec_module(兜)
+_spec = importlib.util.spec_from_file_location("兜", os.path.join(_LIB, '兜底生成器.py'))
+兜 = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(兜)
 
 待审目录 = 兜.待审目录(_LIB)
 清单路径 = os.path.join(待审目录, '待审清单.jsonl')
 
 
 def _读清单():
-    if not os.path.isfile(清单_path):
+    if not os.path.isfile(清单路径):
         return []
     return [json.loads(l) for l in open(清单路径, encoding='utf-8') if l.strip()]
 

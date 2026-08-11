@@ -16,7 +16,9 @@
   · 门槛是数据不是代码 —— 调阈值改 门槛.json，改代码只在新增指标时；
   · 尺子只被调用、不被修改 —— ci_eval 不重算任何指标，口径与人工跑完全一致；
   · 「缺依赖」不算失败 —— 少数块依赖 pypinyin/lunardate，环境没装时单列，不污染门槛
-    （CI 里会装齐，本机没装也能跑，见 冒烟.py v0.27）。
+    （CI 里会装齐，本机没装也能跑，见 冒烟.py v0.27）；
+  · 零 token 且可复现 —— 默认置 DUAN_NO_LLM=1，屏蔽校验器的 LLM 判定（本地 .env 配了真实
+    key 也不会走网络），否则主基准会随模型漂移；确需真实 LLM 时加 --允许LLM。
 
 用法：
     python 积木库/评估/ci_eval.py                  # 全量，写 报告/ci_eval.json
@@ -319,7 +321,16 @@ def main(argv=None):
                     help='另存 报告/ci_daily.json 并追加 报告/ci_history.jsonl')
     ap.add_argument('--对比', default=None, help='与历史报告逐指标对比')
     ap.add_argument('--输出', default=None, help='报告落盘路径（默认 报告/ci_eval.json）')
+    ap.add_argument('--允许LLM', action='store_true',
+                    help='解除零 token 锁，允许校验器/兜底调用真实 LLM（结果不可复现，慎用）')
     a = ap.parse_args(argv)
+
+    # 零 token 锁：CI 必须可复现且不花钱。
+    # 背景（v0.28 实测）：一旦本地 .env 配了真实 api_key，校验器.py 会自动切到「LLM 判定」，
+    # 89 条主基准的 兜底理由 变成模型自然语言 → 链路正确率从 1.0 掉到 0.9888，且每跑一次都烧 token。
+    # 因此这里默认置 DUAN_NO_LLM=1（load_config 会把 api_key 抹空），除非显式 --允许LLM。
+    if not a.允许LLM:
+        os.environ['DUAN_NO_LLM'] = '1'
 
     t0 = time.time()
     旧报告 = 读旧报告(a.对比)          # 先读后写，见 读旧报告 注释
