@@ -8,7 +8,8 @@ chat/completions）按契约生成一块全新的段言积木；无 API key 时�
 
 生成的块写入 积木库/生成/<名称>.duan，并注册进 索引.json，下次同需求零 token 复用。
 
-配置（任选其一）：
+配置（优先级从高到低，任选其一即可）：
+  - 本地密钥文件：积木库/.env（OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL，不入库）
   - 环境变量：OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL
   - 文件：积木库/llm_config.json {"api_key": "...", "base_url": "...", "model": "..."}
 """
@@ -20,16 +21,42 @@ import urllib.request
 _HERE = os.path.abspath(os.path.dirname(__file__))
 
 
+def _read_dotenv():
+    """读取 .env 文件注入环境变量（仅当对应变量尚未设置）。零依赖，失败静默。"""
+    p = os.path.join(_HERE, '.env')
+    if not os.path.isfile(p):
+        return
+    try:
+        with open(p, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, _, v = line.partition('=')
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
+
+
 def load_config():
+    # .env（本地密钥，不入库）优先级最高：先注入环境变量
+    _read_dotenv()
+    # 1) 以环境变量为基础（已含 .env 注入值）
     cfg = {
         'base_url': os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
         'api_key': os.environ.get('OPENAI_API_KEY', ''),
         'model': os.environ.get('OPENAI_MODEL', 'gpt-4o-mini'),
     }
+    # 2) llm_config.json 仅补充环境变量中缺失的项（.env / 环境变量优先，便于本地覆盖）
     p = os.path.join(_HERE, 'llm_config.json')
     if os.path.isfile(p):
         try:
-            cfg.update(json.load(open(p, encoding='utf-8')))
+            j = json.load(open(p, encoding='utf-8'))
+            for k in ('base_url', 'api_key', 'model'):
+                if not cfg.get(k) and j.get(k):
+                    cfg[k] = j[k]
         except Exception:
             pass
     return cfg
@@ -52,8 +79,11 @@ _SYSTEM = """你是一个段言(Duan)中文编程语言的积木生成器。段�
     返回 结果
 
 请只输出一个 JSON 对象，结构：
-{"名称":"...","领域":"生成","层级":0,"描述":"...","输入":[{"名":"序列","类型":"列表"}],"输出":{"类型":"数"},"导出名":"块名","源码":"<完整 .duan 文件文本，含注释/导出/段落，换行用 \\n>"}
-不要输出任何 JSON 以外的解释文字。"""
+{"名称":"...","领域":"生成","层级":0,"描述":"...","输入":[{"名":"序列","类型":"列表"}],"输出":{"类型":"数"},"导出名":"块名","源码":"<完整 .duan 文件文本，含注释/导出/段落，换行必须写成 \\n>"}
+
+下面给出一例【正确】的完整输出（以「计算中位数」为例），请严格照此格式与段言语法生成：
+{"名称":"中位数","领域":"生成","层级":0,"描述":"计算一组数的中位数","输入":[{"名":"序列","类型":"列表[数]"}],"输出":{"类型":"数"},"导出名":"中位数","源码":"# 积木：中位数\\n导出 中位数\\n段落 中位数 接收 序列：\\n    设 排序表 为 []\\n    设 i 为 0\\n    当 i 小于 长度(序列)：\\n        排序表.追加(序列[i])\\n        设 i 为 i 加 1\\n    排序表.排序()\\n    设 计数 为 长度(排序表)\\n    设 中 为 整数(计数 除 2)\\n    如果 计数 模 2 等于 0：\\n        返回 ((排序表[中 减 1] 加 排序表[中]) 除 2)\\n    否则：\\n        返回 排序表[中]\\n"}
+注意：源码 字段是单一 JSON 字符串，其中换行必须写成 \\n（如同上例）；不要输出 JSON 以外的任何解释文字。"""
 
 
 def _call_llm(需求, 候选, cfg):
