@@ -40,7 +40,7 @@ from 混合选块 import hybrid_select
 import 计划缓存
 from 校验器 import validate
 from 接线 import 规划, 不可接, 回退步, _推断类型, _匹配度
-from 兜底生成器 import generate_block, 注册, local_rule_block
+from 兜底生成器 import generate_block, 注册, local_rule_block, 注销, 入待审
 
 
 def _定位运行时():
@@ -153,16 +153,53 @@ def _装配(需求, 候选列表, 输入值, 查表, 链式, top):
     return _造方案(需求, 共享, 步骤)
 
 
-def _兜底(需求, 索引, 候选, 输入值, 块=None, 理由=''):
+def _护栏校验(名):
+    """生成块必须经 体检 + 冒烟 才允许留在索引；校验异常时放行（不阻断本次兜底）。"""
+    try:
+        import importlib.util
+        def _载(n, p):
+            s = importlib.util.spec_from_file_location(n, p)
+            m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+        库 = os.path.dirname(os.path.abspath(__file__))
+        体 = _载('体_g', os.path.join(库, '评估', '体检.py'))
+        冒 = _载('冒_g', os.path.join(库, '评估', '冒烟.py'))
+        r = 体.收集()
+        体检合规 = not any(名 in e for e in (r.get('错') or []))
+        res = 冒.跑(块名=[名], 并发=1)
+        冒烟合规 = (len(res.get('问题块') or []) == 0) and res.get('可运行率', 0) >= 1.0
+        return 体检合规 and 冒烟合规
+    except Exception:
+        return True
+
+
+def _兜底(需求, 索引, 候选, 输入值, 块=None, 理由='', 诊断=None):
     print('[兜底] %s，调用生成器：%s' % (理由 or '选块未命中', 需求))
     blk = 块 if 块 is not None else generate_block(需求, 索引, 候选=候选, 库根=_HERE)
     if not blk:
         print('[兜底] 本地规则也无法生成，需配置真实 LLM（见 llm_config.json）')
         return None
     注册(blk, 库根=_HERE)
+    名 = blk.get('名称') or blk.get('导出名')
+    if 诊断 is not None:
+        诊断['兜底来源'] = 'LLM' if blk.get('_用量') else '本地规则'
+        诊断['生成块名'] = 名
+        诊断['token成本'] = blk.get('_用量')
+    # 质量护栏：生成块必须过 体检+冒烟 才留在索引；不过则回滚到 生成/待审/（1.3）
+    try:
+        if not _护栏校验(名):
+            入待审(blk, 库根=_HERE, 原因='未过护栏(体检/冒烟)')  # 先存待审（写文件，受限环境也允许）
+            注销(名, 库根=_HERE)                                 # 再从索引移除（删文件可能被沙箱拦，但索引已更新）
+            if 诊断 is not None:
+                诊断['护栏'] = '未过，已入待审'
+            print('[护栏] 生成块「%s」未过 体检/冒烟，已回滚至 生成/待审/，未污染索引' % 名)
+    except Exception as e:
+        print('[护栏] 校验/回滚异常（放行，不阻断兜底）：%s' % e)
     blk = dict(blk)
     blk['分数'] = 0.0
-    print('[兜底] 已生成并注册新积木：%s（%s）' % (blk['名称'], blk.get('路径')))
+    if 诊断 is not None and 诊断.get('护栏'):
+        print('[兜底] 已生成积木（未过护栏，已回滚至 待审，不入库）：%s' % 名)
+    else:
+        print('[兜底] 已生成并注册新积木：%s（%s）' % (名, blk.get('路径')))
 
     查表 = _全量查表(load_index())
     步骤 = [{
@@ -245,11 +282,12 @@ def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=F
 
     if 需要兜底:
         if 诊断 is not None:
+            诊断['是兜底'] = True
             诊断['兜底理由'] = 理由
         if 无兜底:
             print('已关闭兜底，无法生成方案：' + 需求)
             return None
-        res = _兜底(需求, 索引, 候选, 输入值, 理由=理由)
+        res = _兜底(需求, 索引, 候选, 输入值, 理由=理由, 诊断=诊断)
         if not res:
             return None
         方案, 候选 = res
@@ -260,7 +298,7 @@ def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=F
             if 无兜底:
                 print('接线不可接且已关闭兜底：' + 需求)
                 return None
-            res = _兜底(需求, 索引, 候选, 输入值, 理由='契约级接线不可接')
+            res = _兜底(需求, 索引, 候选, 输入值, 理由='契约级接线不可接', 诊断=诊断)
             if not res:
                 return None
             方案, 候选 = res
@@ -279,7 +317,7 @@ def 组合(需求, 输入值="[1, 2, 3, 4, 5]", top=3, 语义=False, 关键词=F
                         [c for c in 候选 if c['名称'] != lr['名称']]
                     方案 = _装配(需求, 候选, 输入值, 查表, 链式, top) or 方案
                 else:
-                    res = _兜底(需求, 索引, 候选, 输入值, 块=lr,
+                    res = _兜底(需求, 索引, 候选, 输入值, 块=lr, 诊断=诊断,
                               理由='能力缺失（本地规则）')
                     if res:
                         方案, 候选 = res
@@ -372,11 +410,12 @@ def _cli(argv=None):
     if 诊断 is not None:
         诊断['规划耗时ms'] = round((time.time() - t0) * 1000, 2)
     if not res:
+        print('未能生成方案：' + args.需求)
         if 诊断 is not None:
             诊断['成功'] = False
             诊断['失败阶段'] = '规划'
+            print('\n── JSON 诊断 ──')
             print(json.dumps(诊断, ensure_ascii=False, indent=2))
-        print('未能生成方案：' + args.需求)
         return 1
     方案, 候选 = res
     选块法 = '关键词' if args.关键词 else ('语义' if args.语义 else 'embedding')
@@ -422,7 +461,9 @@ def _cli(argv=None):
             print(err.strip()[-600:])
     if not 成功 and not 是兜底 and not args.无兜底:
         print('\n[执行闭环] 所有候选均失败，触发兜底生成重跑…')
-        res2 = _兜底(args.需求, 索引, 候选, args.输入, 理由='运行期崩溃，候选均不满足')
+        诊断['是兜底'] = True
+        诊断['兜底理由'] = 诊断.get('兜底理由') or '运行期崩溃，候选均不满足'
+        res2 = _兜底(args.需求, 索引, 候选, args.输入, 理由='运行期崩溃，候选均不满足', 诊断=诊断)
         if res2:
             方案2, _ = res2
             print('\n── 运行（兜底生成）──')

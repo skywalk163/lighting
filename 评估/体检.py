@@ -18,6 +18,10 @@
 用法：
     python 评估/体检.py            # 全量体检
     python 评估/体检.py --严格      # 警告也算失败（CI 用）
+
+对外接口：
+    收集() -> {'块总数': int, '错': [str], '警': [str]}   纯数据、不打印，供 ci_eval 汇总
+    体检(严格=False) -> int                              打印报告并返回退出码
 """
 
 import argparse
@@ -45,7 +49,8 @@ def _读源(路径):
         return None if isinstance(e, FileNotFoundError) else ''
 
 
-def 体检(严格=False):
+def 收集():
+    """跑全部检查项，返回结构化结果（不打印）。CI 汇总与人眼报告共用同一份计算。"""
     idx = load_index()
     块 = idx.get('块') or []
     错, 警 = [], []
@@ -109,6 +114,13 @@ def 体检(严格=False):
             if len(签名) != 期望:
                 错.append('E7 %s：索引声明 %d 个入参，段落签名有 %d 个（%s）'
                           % (名, 期望, len(签名), '、'.join(签名) or '无'))
+
+    return {'块总数': len(块), '错': 错, '警': 警}
+
+
+def 体检(严格=False):
+    r = 收集()
+    块, 错, 警 = range(r['块总数']), r['错'], r['警']
 
     print('══ 积木库契约体检 ══')
     print('块总数 %d　错误 %d　警告 %d' % (len(块), len(错), len(警)))

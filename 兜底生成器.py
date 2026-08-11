@@ -58,7 +58,7 @@ _SYSTEM = """你是一个段言(Duan)中文编程语言的积木生成器。段�
 
 def _call_llm(需求, 候选, cfg):
     if not cfg.get('api_key'):
-        return None
+        return None, None
     url = cfg['base_url'].rstrip('/') + '/chat/completions'
     cands = '、'.join(c.get('名称', '') for c in (候选 or [])[:5]) or '（无）'
     user = '需求：%s\n已选候选（可能不对）：%s\n请生成一块能直接满足该需求的段言积木。' % (需求, cands)
@@ -79,10 +79,10 @@ def _call_llm(需求, 候选, cfg):
         with urllib.request.urlopen(req, timeout=60) as r:
             data = json.loads(r.read().decode('utf-8'))
         content = data['choices'][0]['message']['content']
-        return json.loads(content)
+        return json.loads(content), data.get('usage', {})
     except Exception as e:
         print('[兜底] LLM 调用失败，降级本地规则：%s' % e)
-        return None
+        return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -330,11 +330,13 @@ def _绝对值模板():
 
 def generate_block(需求, 索引=None, 候选=None, 库根=None):
     """生成一块满足需求的新积木（dict）。返回 None 表示连本地规则都覆盖不了。"""
-    blk = _call_llm(需求, 候选, load_config())
+    blk, 用量 = _call_llm(需求, 候选, load_config())
     if blk is None:
         blk = _本地规则生成(需求)
     if blk is None:
         return None
+    if 用量:
+        blk['_用量'] = 用量  # token 成本（仅真实 LLM 有；本地规则为 None）
     # 补默认字段 + 兜底拼装最小可用源码
     blk.setdefault('领域', '生成')
     blk.setdefault('层级', 0)
@@ -379,6 +381,52 @@ def 注册(块, 库根=None):
     json.dump(idx, open(idx_path, 'w', encoding='utf-8'),
               ensure_ascii=False, indent=2)
     return 路径
+
+
+待审目录名 = '待审'
+
+
+def 待审目录(库根=None):
+    return os.path.join(库根 or _HERE, '生成', 待审目录名)
+
+
+def 入待审(块, 库根=None, 原因=''):
+    """把未过护栏的生成块写入 生成/待审/ 并记入 待审清单.jsonl（不污染 索引.json）。"""
+    import datetime
+    库根 = 库根 or _HERE
+    名 = 块.get('名称') or 块.get('导出名')
+    目录 = 待审目录(库根)
+    os.makedirs(目录, exist_ok=True)
+    路径 = os.path.join(目录, '%s.duan' % 名)
+    with open(路径, 'w', encoding='utf-8') as f:
+        f.write(块.get('源码', ''))
+    清单 = os.path.join(目录, '待审清单.jsonl')
+    row = {'名称': 名, '路径': '生成/%s/%s.duan' % (待审目录名, 名), '原因': 原因,
+           '时间': datetime.datetime.now().isoformat(timespec='seconds'),
+           '块': 块}
+    with open(清单, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(row, ensure_ascii=False) + '\n')
+    return 路径
+
+
+def 注销(名称, 库根=None):
+    """从 索引.json 移除生成块并删除其 .duan 文件（护栏不通过时回滚，避免坏块污染选块）。"""
+    库根 = 库根 or _HERE
+    idx_path = os.path.join(库根, '索引.json')
+    idx = json.load(open(idx_path, encoding='utf-8'))
+    原 = len(idx['块'])
+    idx['块'] = [b for b in idx['块'] if b.get('名称') != 名称]
+    if len(idx['块']) == 原:
+        return False
+    json.dump(idx, open(idx_path, 'w', encoding='utf-8'),
+              ensure_ascii=False, indent=2)
+    文件 = os.path.join(库根, '生成', '%s.duan' % 名称)
+    if os.path.isfile(文件):
+        try:
+            os.remove(文件)
+        except OSError:
+            pass  # 某些受限环境禁止删除，索引已更新即可
+    return True
 
 
 def _cli(argv=None):
