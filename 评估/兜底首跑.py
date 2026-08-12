@@ -109,15 +109,17 @@ def 主(只=None, 保留=False):
     for it in 意图:
         需求 = it['需求']
         输入 = it.get('输入', '[1,2,3,4,5]')
+        期望 = it.get('期望')  # 验收语义校验：块在「输入」下的正确输出文本
         索引快照 = 索引路径 + '.runbak'
         shutil.copy(索引路径, 索引快照)
         生成前 = _生成文件集()
         块名前 = _块名集()
 
         try:
-            p = subprocess.run(
-                [_PY, '组合.py', 需求, '--输入', 输入, '--json', '--无缓存'],
-                cwd=_LIB, capture_output=True, text=True, timeout=180)
+            cmd = [_PY, '组合.py', 需求, '--输入', 输入, '--json', '--无缓存']
+            if 期望:
+                cmd += ['--期望', 期望]
+            p = subprocess.run(cmd, cwd=_LIB, capture_output=True, text=True, timeout=180)
             out = p.stdout + '\n' + p.stderr
             诊断 = _取诊断(p.stdout)
         except Exception as e:
@@ -125,7 +127,7 @@ def 主(只=None, 保留=False):
             诊断 = {'异常': repr(e)}
 
         是兜底 = 诊断.get('是兜底', False)
-        成功 = 诊断.get('成功', False)
+        成功 = 诊断.get('成功', False)  # 已含语义校验（传了 --期望 时）
         兜底理由 = 诊断.get('兜底理由', '')
 
         新块 = sorted(_块名集() - 块名前)
@@ -135,11 +137,12 @@ def 主(只=None, 保留=False):
         token成本 = 诊断.get('token成本')
         体检合规 = _体检合规(新名) if 新名 else False
         冒烟合规 = _冒烟合规(新名) if 新名 else False
+        语义正确 = 诊断.get('语义正确') if 期望 else None
         成功沉淀 = bool(是兜底 and 成功 and 新名 and 体检合规 and 冒烟合规)
 
         row = {
-            '需求': 需求, '输入': 输入, '分类': it.get('分类'), '期望能力': it.get('期望能力'),
-            '是兜底': 是兜底, '成功': 成功, '兜底理由': 兜底理由,
+            '需求': 需求, '输入': 输入, '期望': 期望, '分类': it.get('分类'), '期望能力': it.get('期望能力'),
+            '是兜底': 是兜底, '成功': 成功, '语义正确': 语义正确, '兜底理由': 兜底理由,
             '兜底来源': 兜底来源, '生成块名': 生成块名,
             '体检合规': 体检合规, '冒烟合规': 冒烟合规, '成功沉淀': 成功沉淀,
             '耗时ms': 诊断.get('规划耗时ms'), 'token成本': token成本,
@@ -147,9 +150,10 @@ def 主(只=None, 保留=False):
         }
         rows.append(row)
         mark = '✓沉淀' if 成功沉淀 else ('✗失败' if 是兜底 else '～库内')
-        print('  [%s] %s → 生成=%s 体检=%s 冒烟=%s %s'
+        语义标 = '' if 语义正确 is None else (' 语义%s' % ('✓' if 语义正确 else '✗'))
+        print('  [%s] %s → 生成=%s 体检=%s 冒烟=%s%s %s'
               % (mark, 需求[:24], 新名 or '-',
-                 '✓' if 体检合规 else '✗', '✓' if 冒烟合规 else '✗',
+                 '✓' if 体检合规 else '✗', '✓' if 冒烟合规 else '✗', 语义标,
                  '' if 成功 else '运行未成功'))
         if not 保留:
             _回滚(索引快照, 生成前)

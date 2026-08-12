@@ -367,7 +367,33 @@ def _运行_单次(方案, 输出, duan):
     return r.returncode, r.stdout, r.stderr
 
 
-def _成功(rc, out):
+def _语义匹配(实际, 期望):
+    """比较段言块的真实输出与期望输出。
+
+    优先按 JSON 语义比较（容错空格/键序：`[3, 6, 9]` 与 `[3,6,9]` 等价，
+    `{'a':1}` 与 `{'a': 1}` 等价）；JSON 不可解析时退化为精确字符串相等。
+    数值比较带**绝对+相对容差**（1e-6 + 1%），吸收 LLM 块常见的
+    `四舍五入(值,2)` 与浮点格式差异；列表逐元素递归比较。
+    返回 True 当且仅当二者语义一致。
+    """
+    实际 = (实际 or '').strip()
+    期望 = (期望 or '').strip()
+    if not 期望:
+        return True
+    if 实际 == 期望:
+        return True
+    try:
+        a, b = json.loads(实际), json.loads(期望)
+    except Exception:
+        return False
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(a - b) <= 1e-6 + 1e-2 * abs(b)
+    if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+        return all(_语义匹配(json.dumps(x), json.dumps(y)) for x, y in zip(a, b))
+    return a == b
+
+
+def _成功(rc, out, 期望=None):
     """判断一次段言运行是否真的成功。
 
     段言 src 后端（cli/duan.py run 默认）会**静默吞掉运行期错误**：
@@ -375,8 +401,16 @@ def _成功(rc, out):
     因此『成功』必须同时要求 rc==0 **且** 有非空 stdout —— 正常生成的方案
     必有「打印」步骤，成功必有输出；只有崩溃才会 rc=0 且空输出。
     （解析错误仍会返回 rc!=0，被此判定一并拦下。）
+
+    当传入 期望（来自验收测试集）时，额外要求**输出语义与期望一致**，
+    消除「rc==0 且非空输出但语义全错」的假阳性（如倍数列表把列表当单参
+    做重复仍有输出）。不传 期望 时（生产/CI 主链路）行为不变。
     """
-    return rc == 0 and bool(out.strip())
+    if rc != 0 or not out.strip():
+        return False
+    if 期望:
+        return _语义匹配(out, 期望)
+    return True
 
 
 def _cli(argv=None):
@@ -395,6 +429,8 @@ def _cli(argv=None):
     p.add_argument('--混合', action='store_true',
                    help='混合选块：概念图召回（空则 TF-IDF 补召回）+ 并列群语义重排')
     p.add_argument('--无缓存', action='store_true', help='跳过计划缓存，强制重算')
+    p.add_argument('--期望', default=None,
+                   help='验收用：期望输出文本，做语义校验（JSON 等价/数值容差/字符串相等）；不传则只验 rc+非空输出')
     p.add_argument('--json', action='store_true',
                    help='输出结构化 JSON 诊断（需求/策略/候选/兜底理由/缓存/运行结果，机器可读）')
     p.add_argument('-o', '--输出', default=os.path.join(_HERE, '组合结果.duan'))
@@ -447,7 +483,7 @@ def _cli(argv=None):
         rc, out, err = _运行_单次(方案_i, args.输出, duan)
         if out.strip():
             print(out.rstrip())
-        if _成功(rc, out):
+        if _成功(rc, out, args.期望):
             成功 = True
             print('[执行闭环] %s 运行成功 ✓' % 标签)
             运行记录.append({'标签': 标签, '成功': True, 'rc': rc,
@@ -470,7 +506,7 @@ def _cli(argv=None):
             rc, out, err = _运行_单次(方案2, args.输出, duan)
             if out.strip():
                 print(out.rstrip())
-            if _成功(rc, out):
+            if _成功(rc, out, args.期望):
                 成功 = True
                 print('[执行闭环] 兜底生成运行成功 ✓')
                 运行记录.append({'标签': '兜底生成', '成功': True, 'rc': rc,
@@ -483,6 +519,8 @@ def _cli(argv=None):
                     print(err.strip()[-600:])
     if 诊断 is not None:
         诊断.update({'成功': 成功, '最终rc': rc or 0, '运行': 运行记录})
+        if args.期望:
+            诊断['语义正确'] = 成功
         print('\n── JSON 诊断 ──')
         print(json.dumps(诊断, ensure_ascii=False, indent=2))
     return 0 if 成功 else (rc or 1)
