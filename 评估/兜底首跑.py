@@ -14,7 +14,7 @@
   - 默认每跑完一条即回滚 索引.json / 生成/，保持仓库干净；要真正沉淀用 --保留。
   - token 成本字段当前为 null；待 1.3 在 兜底生成器 接入用量回传后填充。
 """
-import os, sys, json, shutil, importlib.util, subprocess, argparse
+import os, sys, json, shutil, importlib.util, subprocess, argparse, time
 
 _LIB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 积木库/
 _PY = sys.executable  # 由调用方用 venv 解释器运行本脚本
@@ -95,7 +95,7 @@ def _冒烟合规(新名):
     return (len(问题) == 0) and res.get('可运行率', 0) >= 1.0
 
 
-def 主(只=None, 保留=False):
+def 主(只=None, 保留=False, 冷却=0):
     意图 = json.load(open(意图文件, encoding='utf-8'))
     if 只:
         意图 = [x for x in 意图 if 只 in x['需求'] or 只 in x.get('分类', '')]
@@ -161,6 +161,8 @@ def 主(只=None, 保留=False):
             os.remove(索引快照)
         except OSError:
             pass
+        if 冷却 and it is not 意图[-1]:
+            time.sleep(冷却)
 
     触发 = sum(1 for r in rows if r['是兜底'])
     沉淀 = sum(1 for r in rows if r['成功沉淀'])
@@ -184,5 +186,6 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--只', default=None, help='只跑含该关键字的意图')
     ap.add_argument('--保留', action='store_true', help='不回滚，真实沉淀到 索引.json')
+    ap.add_argument('--冷却', type=int, default=0, help='每条意图之间的冷却秒数（规避 429 限流）')
     a = ap.parse_args()
-    主(只=a.只, 保留=a.保留)
+    主(只=a.只, 保留=a.保留, 冷却=a.冷却)
