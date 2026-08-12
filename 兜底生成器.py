@@ -16,6 +16,8 @@ chat/completions）按契约生成一块全新的段言积木；无 API key 时�
 
 import json
 import os
+import time
+import urllib.error
 import urllib.request
 
 _HERE = os.path.abspath(os.path.dirname(__file__))
@@ -130,14 +132,29 @@ def _call_llm(需求, 候选, cfg):
         url, data=json.dumps(payload).encode('utf-8'),
         headers={'Authorization': 'Bearer ' + cfg['api_key'],
                  'Content-Type': 'application/json'})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            data = json.loads(r.read().decode('utf-8'))
-        content = data['choices'][0]['message']['content']
-        return json.loads(content), data.get('usage', {})
-    except Exception as e:
-        print('[兜底] LLM 调用失败，降级本地规则：%s' % e)
-        return None, None
+    # 429 限流 / 5xx 瞬时错误：指数退避重试（v0.28.4）。
+    # 避免瞬时限流把整轮兜底打成 0/20 假阴性（实测 AMD 端点短爆发即 429）。
+    # 400（模型不存在/鉴权失败）属硬错，立即降级，不重试。
+    _退避 = [5, 10, 20]
+    for _尝试 in range(len(_退避) + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                data = json.loads(r.read().decode('utf-8'))
+            content = data['choices'][0]['message']['content']
+            return json.loads(content), data.get('usage', {})
+        except urllib.error.HTTPError as e:
+            if e.code == 429 or e.code >= 500:
+                if _尝试 < len(_退避):
+                    print('[兜底] LLM %d 限流/瞬时错，%.0fs 后重试(%d/%d)'
+                          % (e.code, _退避[_尝试], _尝试 + 1, len(_退避)))
+                    time.sleep(_退避[_尝试])
+                    continue
+            print('[兜底] LLM 调用失败，降级本地规则：%s' % e)
+            return None, None
+        except Exception as e:
+            print('[兜底] LLM 调用失败，降级本地规则：%s' % e)
+            return None, None
+    return None, None
 
 
 # ---------------------------------------------------------------------------
