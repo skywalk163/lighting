@@ -175,10 +175,18 @@ def 主(只=None, 保留=False, 冷却=0):
         print('  ⚠ 未配置 api_key：本地规则 7 类已验证；其余 %d 条需真实 LLM key 才能跑通。'
               % (len(rows) - sum(1 for r in rows if r['分类'] == '本地规则')))
 
-    with open(日志文件, 'w', encoding='utf-8') as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + '\n')
-    print('  日志：%s' % 日志文件)
+    try:
+        with open(日志文件, 'w', encoding='utf-8') as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + '\n')
+        print('  日志：%s' % 日志文件)
+    except OSError as e:
+        # 主日志文件被别的进程占用（重叠跑/编辑器锁）时降级写副本，避免整轮崩溃
+        alt = 日志文件.replace('.jsonl', '_明细.jsonl')
+        with open(alt, 'w', encoding='utf-8') as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + '\n')
+        print('  日志（主文件被占用，写副本）：%s  [%s]' % (alt, e))
     return 沉淀, len(rows)
 
 
