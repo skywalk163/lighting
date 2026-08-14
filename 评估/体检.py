@@ -12,6 +12,7 @@
   E1 名称重复            E2 导出名重复           E3 路径不存在
   E4 文件缺少「段落 <导出名> 接收」  E5 文件缺少「导出 <导出名>」
   E6 类型标注非法        E7 索引入参数量 ≠ 段落签名参数数
+  E8 路径未纳入 git 跟踪（漏提交，CI 全新 checkout 将缺失）
   W1 导出名互为前缀（词法器风险）    W2 描述过短/缺失
   W3 导出名与名称不同且无描述佐证（可读性）   W4 类型标注仍是裸「列表」/「字典」
 
@@ -28,6 +29,7 @@ import argparse
 import io
 import os
 import re
+import subprocess
 import sys
 
 _HERE = os.path.abspath(os.path.dirname(__file__))
@@ -40,6 +42,63 @@ from 选块 import load_index  # noqa: E402
 
 _段落头 = re.compile(r'^\s*段落\s+([^\s（(：:]+)\s*(?:接收\s*([^：:]*))?[：:]', re.M)
 _导出行 = re.compile(r'^\s*导出\s+(\S+)\s*$', re.M)
+
+
+# ---- E8 辅助：索引路径 vs git 跟踪 ----
+# 块在磁盘、索引也引用，但既未 git 跟踪、又不被 .gitignore 放行 → 漏提交。
+# 设计要点：
+#   · 用 git check-ignore 自动放行合法忽略目录（生成/待审、生成/_验证、脚手架），
+#     不硬编码忽略名单，未来新增忽略目录也无需改这里。
+#   · 非 git 环境（无 .git / git 不可用）整体跳过 E8，不误报、不崩溃。
+#   · 已跟踪集只取一次（git ls-files -- 积木库/），避免逐块 subprocess。
+_仓库根 = None
+_仓库根就绪 = False
+_已跟踪集 = None
+_已跟踪集就绪 = False
+
+
+def _取仓库根():
+    global _仓库根, _仓库根就绪
+    if not _仓库根就绪:
+        _仓库根就绪 = True
+        try:
+            r = subprocess.run(['git', 'rev-parse', '--show-toplevel'],
+                               cwd=_库根, capture_output=True, text=True, timeout=20)
+            _仓库根 = r.stdout.strip() if r.returncode == 0 else None
+        except Exception:
+            _仓库根 = None
+    return _仓库根
+
+
+def _取已跟踪集():
+    global _已跟踪集, _已跟踪集就绪
+    if not _已跟踪集就绪:
+        _已跟踪集就绪 = True
+        root = _取仓库根()
+        if not root:
+            return None
+        try:
+            # -c core.quotepath=0：关闭非 ASCII 路径的八进制转义，否则中文路径
+            # 会变成 "\347\..." 串，与真实 git_rel 比对失败 → 全部误报。
+            r = subprocess.run(['git', '-c', 'core.quotepath=0', 'ls-files',
+                                '--', '积木库/'],
+                               cwd=root, capture_output=True, text=True, timeout=30)
+            _已跟踪集 = set(r.stdout.splitlines()) if r.returncode == 0 else None
+        except Exception:
+            _已跟踪集 = None
+    return _已跟踪集
+
+
+def _被git忽略(git_rel):
+    root = _取仓库根()
+    if not root:
+        return False
+    try:
+        r = subprocess.run(['git', 'check-ignore', '--', git_rel],
+                           cwd=root, capture_output=True, text=True, timeout=20)
+        return r.returncode == 0  # 0 = 被忽略（合法草稿/脚手架，放行）
+    except Exception:
+        return False
 
 
 def _读源(路径):
@@ -97,6 +156,17 @@ def 收集():
         if src is None:
             错.append('E3 %s：路径不存在 %s' % (名, rel))
             continue
+
+        # E8 路径未纳入 git 跟踪：块在磁盘、索引已引用，但既未跟踪又不被忽略
+        #     → 漏提交。CI 全新 checkout 会缺文件（第一轮 19 条路径错误的根因）。
+        #     用 git check-ignore 自动放行合法草稿/脚手架（生成/待审、生成/_验证 等）。
+        root = _取仓库根()
+        if root is not None:
+            git_rel = os.path.relpath(abspath, root).replace(os.sep, '/')
+            已跟踪 = _取已跟踪集()
+            if 已跟踪 is not None and git_rel not in 已跟踪 and not _被git忽略(git_rel):
+                错.append('E8 %s：路径未纳入 git 跟踪 %s（块已索引但漏提交，CI 全新 checkout 将缺失）'
+                          % (名, rel))
 
         导出集 = set(_导出行.findall(src))
         if 导 not in 导出集:
