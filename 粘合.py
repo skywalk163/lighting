@@ -48,6 +48,27 @@ def _提取段落(路径):
     return '\n'.join(out).strip('\n')
 
 
+def _安全块路径(库根, 相对):
+    """把 方案 里的 路径 字段净化并校验不逃逸 库根。
+
+    方案可由外部提供，路径字段不可信；含 父目录记号(..) / 绝对路径 / 空成分
+    一律拒绝（返回 None），交由上层回退到 领域/块名 推断的安全路径；
+    仅当归一后仍严格落在 库根 内才放行。
+    """
+    相对 = (相对 or '').replace('\\', '/').strip()
+    if not 相对:
+        return None
+    部件 = 相对.split('/')
+    # 拒绝任何父目录记号、当前目录记号或空成分（含开头的 / 与盘符式绝对路径）
+    if any(p in ('', '.', '..') for p in 部件) or 相对.startswith('/'):
+        return None
+    完整 = os.path.normpath(os.path.join(库根, 相对))
+    库根规范 = os.path.normpath(库根)
+    if 完整 != 库根规范 and not 完整.startswith(库根规范 + os.sep):
+        return None
+    return 完整
+
+
 def _结果变量(i):
     """第 i 步（0 基）的结果变量名，沿用 jikuai 的「赵果N」约定。"""
     return '赵果%d' % (i + 1)
@@ -71,7 +92,7 @@ def synthesize(方案, 库根=_HERE):
         if key in seen:
             continue
         seen.add(key)
-        blk_path = os.path.join(库根, s.get('路径') or '')
+        blk_path = _安全块路径(库根, s.get('路径') or '')
         if not (blk_path and os.path.isfile(blk_path)):
             blk_path = os.path.join(库根, s['领域'], s['块'] + '.duan')
         if os.path.isfile(blk_path):

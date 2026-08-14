@@ -27,7 +27,7 @@ _HERE = os.path.abspath(os.path.dirname(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from 粘合 import _提取段落   # noqa: E402
+from 粘合 import _提取段落, _安全块路径   # noqa: E402
 
 
 def _结果变量(i):
@@ -76,7 +76,7 @@ def generate(配方, 库根=_HERE):
         if key in seen:
             continue
         seen.add(key)
-        blk_path = os.path.join(库根, s.get('路径') or '')
+        blk_path = _安全块路径(库根, s.get('路径') or '')
         if not os.path.isfile(blk_path):
             blk_path = os.path.join(库根, s['领域'], s['块'] + '.duan')
         if os.path.isfile(blk_path):
