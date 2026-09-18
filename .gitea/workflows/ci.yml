@@ -1,0 +1,118 @@
+# 光明积木 lighting · 本地 CI（Gitea Actions，FreeBSD host 模式，无 Docker）
+#
+# 本仓是 R60 从 `light-merge/积木库` 拆出的独立积木库仓，**仓根即原 `积木库/` 目录**。
+# 这条流水线就是原 light-merge `.gitea/workflows/ci.yml` 里那段「积木库门禁（五把尺子 +
+# 兜底闸门）」的迁移落点 —— R61 已把那段从 light-merge 移除（那里已无 `积木库/`，
+# 再跑就是必然红）。
+#
+# 门槛是数据不是代码：`评估/门槛.json`（调门槛=改这里）；判定逻辑：`评估/ci_eval.py`。
+#
+# ⚠️ 编译器不在本仓：冒烟/跑分要调 `cli/light.py`，而 `cli/` 属于 light-merge。故本流水线
+#    先把 light-merge 检出到 `$HOME/.cache/light-compiler`（已有则 fetch 复用），
+#    再用 `LIGHT_MERGE` 指过去 —— `评估/冒烟.py::_定位编译根()` 与 `组合.py::_定位运行时()`
+#    都认这个环境变量（R61 新增；缺它会去跑不存在的 cli/light.py，151 块全报失败）。
+#
+# 与 .github/workflows/eval.yml / .gitcode/workflows/eval.yml 同一套门槛，差异只在平台约定：
+#   · runs-on: freebsd（act_runner host 执行器；FreeBSD 无原生 Docker，只能 host 模式）
+#   · checkout 走本地 actions/checkout 镜像（写裸 actions/checkout@v4 会偶发回落 github.com）
+#   · 无跨仓 checkout（Gitea 侧行为不确定）→ 用 git clone --depth 1 拉编译器
+#   · pip 指向本地 devpi 镜像，公网包取不到时回退 https://pypi.org/simple
+
+name: 积木库五把尺子
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!docs_site/**'
+      - '!archive/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!docs_site/**'
+      - '!archive/**'
+  schedule:
+    # 每天 01:00 UTC ≈ 北京时间 09:00：即使没人提交，也盯一次环境漂移
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: freebsd
+    timeout-minutes: 30
+    steps:
+      - uses: http://192.168.1.5:3000/actions/checkout@v4
+
+      # 编译器检出。私有仓靠 runner 自带的 Gitea token 注入凭据；公开仓无感。
+      # 想换源（如指向本机另一份检出）→ 在仓库变量里设 GITEA_LIGHT_URL。
+      - name: 准备光明编译器检出（light-merge）
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITEA_ACTOR: ${{ github.actor }}
+        run: |
+          set -e
+          URL="${GITEA_LIGHT_URL:-http://192.168.1.5:3000/skywalk/light.git}"
+          case "$URL" in
+            http://*) AUTH_URL="http://${GITEA_ACTOR}:${GITEA_TOKEN}@${URL#http://}" ;;
+            https://*) AUTH_URL="https://${GITEA_ACTOR}:${GITEA_TOKEN}@${URL#https://}" ;;
+            *) AUTH_URL="$URL" ;;
+          esac
+          CK="$HOME/.cache/light-compiler"
+          if [ -f "$CK/cli/light.py" ]; then
+            git -C "$CK" fetch --depth 1 origin main && git -C "$CK" reset --hard FETCH_HEAD \
+              || echo "复用已有编译器检出（fetch 失败，继续用旧版）"
+          else
+            rm -rf "$CK"
+            git clone --depth 1 "$AUTH_URL" "$CK" || {
+              echo "::error::编译器检出失败。可在 runner 上手工执行 git clone $URL $CK 后重跑。"
+              exit 1
+            }
+          fi
+          test -f "$CK/cli/light.py"
+          echo "LIGHT_MERGE=$CK" >> "$GITHUB_ENV"
+
+      # 持久 venv：只在首次建，之后复用；可选依赖装不上不致命。
+      - name: 准备/复用 host 持久 venv
+        run: |
+          VENV="$HOME/.cache/lighting-ci-venv"
+          if [ ! -d "$VENV" ]; then
+            python3 -m venv --system-site-packages "$VENV"
+          fi
+          . "$VENV/bin/activate"
+          python -m pip install --upgrade pip >/dev/null 2>&1 || true
+          # 少数块（转拼音 / 农历互转）依赖第三方包。装不上也不致命：冒烟会把它们标成
+          # 「缺依赖」单列，不计入可运行率分母（见 评估/冒烟.py v0.27）。devpi 没有时回退公网。
+          python -m pip install pypinyin lunardate opencc-python-reimplemented || \
+            python -m pip install --index-url https://pypi.org/simple \
+              pypinyin lunardate opencc-python-reimplemented || \
+            echo "可选依赖未装上：相关块会被标为「缺依赖」，不影响门槛判定"
+          echo "VENV=$VENV" >> "$GITHUB_ENV"
+
+      - name: 五把尺子 + 硬门槛
+        run: |
+          . "$VENV/bin/activate"
+          export LIGHT_MERGE
+          python 评估/ci_eval.py --并发 8
+
+      - name: 报告摘要
+        if: always()
+        run: |
+          . "$VENV/bin/activate"
+          python - <<'PY'
+          import io, json, os
+          p = '评估/报告/ci_eval.json'
+          try:
+              r = json.load(io.open(p, encoding='utf-8'))
+          except Exception as e:
+              print('报告缺失：%s' % e); raise SystemExit(0)
+          print('结论：%s ｜ 耗时 %ss' % ('全绿' if r['结论']['通过'] else '有回归',
+                                        r['结论']['耗时秒']))
+          for g in r['闸门']:
+              print('%s %s/%s 实测 %s（要求 %s %s）'
+                    % ('OK ' if g['通过'] else 'BAD', g['组'], g['项'],
+                       g['实测'], g['向'], g['门槛']))
+          PY

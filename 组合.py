@@ -44,22 +44,38 @@ from 兜底生成器 import generate_block, 注册, local_rule_block, 注销, �
 
 
 def _定位运行时():
-    """定位光明运行时：优先仓库内 cli/light.py（开发模式），pip 安装后回退到 light 命令。
+    """定位光明运行时。解析顺序：
 
-    v1.0 pip 化：包安装后不再有仓库路径，此时用已安装的 `light` 命令
-    （pyproject.toml 的 console script）执行 `light run`。
+      1) 环境变量 LIGHT_MERGE / LIGHT_RUNTIME 指向的编译器检出内的 cli/light.py
+         （R60 拆分后本仓已无 cli/ —— CI 走这条）
+      2) 本仓内 cli/light.py，或同工作区同级 `../light-merge/cli/light.py`
+         （拆分前的开发模式布局 / 本机同工作区开发，零配置可用）
+      3) pip 安装后的 `light` 命令（v1.0 pip 化：包安装后不再有仓库路径）
+
     返回可执行路径或命令名。
     """
-    repo_light = os.path.join(_REPO, 'cli', 'light.py')
-    if os.path.isfile(repo_light):
-        return repo_light
+    for 变量 in ('LIGHT_MERGE', 'LIGHT_RUNTIME'):
+        根 = os.environ.get(变量)
+        if 根:
+            cand = os.path.join(根, 'cli', 'light.py')
+            if os.path.isfile(cand):
+                return os.path.normpath(cand)
+    # 同工作区同级检出：拆分前 _REPO 即编译器根；拆分后 _REPO 变成工作区根
+    # （…/duan-light-merge），编译器在 …/duan-light-merge/light-merge。
+    for 根 in (_REPO,
+               os.path.join(_REPO, 'light-merge'),
+               os.path.join(os.path.dirname(_REPO), 'light-merge'),
+               _HERE):
+        cand = os.path.join(根, 'cli', 'light.py')
+        if os.path.isfile(cand):
+            return cand
     from shutil import which
     cmd = which('light')
     if cmd:
         return cmd
     raise RuntimeError(
-        '找不到光明运行时：仓库内 cli/light.py 不存在，也未安装 light 命令。'
-        '请先 pip install 或在本仓库内运行。')
+        '找不到光明运行时：本仓内无 cli/light.py（R60 已把积木库从 light-merge 拆出），'
+        '也未安装 light 命令。请设 LIGHT_MERGE 指向 light-merge 检出，或 pip install light。')
 
 
 def _全量查表(索引):

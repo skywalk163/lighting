@@ -15,11 +15,11 @@
 `[3, 1, 4, 1, 5]` 而不是瞎猜。
 
 用法：
-    python 积木库/评估/冒烟.py                 # 跑全库
-    python 积木库/评估/冒烟.py --只跑 日期 校验  # 只跑指定领域
-    python 积木库/评估/冒烟.py --块 闰年 星期几  # 只跑指定块
-    python 积木库/评估/冒烟.py --详细           # 打印每块的实参与返回值
-    python 积木库/评估/冒烟.py --并发 8          # 并行跑（CI 用，151 块 2m50s → 30s 级）
+    python 评估/冒烟.py                 # 跑全库
+    python 评估/冒烟.py --只跑 日期 校验  # 只跑指定领域
+    python 评估/冒烟.py --块 闰年 星期几  # 只跑指定块
+    python 评估/冒烟.py --详细           # 打印每块的实参与返回值
+    python 评估/冒烟.py --并发 8          # 并行跑（CI 用，151 块 2m50s → 30s 级）
 
 v0.27（CI 接入）三处改动：
   1. **缺依赖 ≠ 失败**。少数块（转拼音/公历转农历…）依赖第三方包，环境没装时以前
@@ -44,6 +44,43 @@ from concurrent.futures import ThreadPoolExecutor
 _HERE = os.path.abspath(os.path.dirname(__file__))
 _LIB = os.path.abspath(os.path.join(_HERE, '..'))
 _ROOT = os.path.abspath(os.path.join(_LIB, '..'))
+
+
+def _定位编译根():
+    """光明编译器仓库根（即含 `cli/light.py` 的目录）。
+
+    拆分前：积木库在本仓内（`<光merge>/评估/`），`_ROOT` 恰好就是编译器根。
+    **R60 拆分后本仓已无 `cli/`**，`_ROOT` 会落到工作区一级（`…/duan-light-merge`），
+    于是冒烟会去跑一个不存在的 `cli/light.py`。故这里显式解析，顺序：
+      1) 环境变量 `LIGHT_MERGE`（CI / 本地首选；082全量回归.py 同款约定）
+      2) 环境变量 `LIGHT_RUNTIME`
+      3) `_ROOT`（旧布局：工作区根就是编译器根）
+      4) `_ROOT/light-merge`（同工作区的同级编译器检出）
+      5) `_LIB`（拆分前布局自兼容）
+    都找不到 → 返回 None，由 `跑()` 抛可读错误（**而不是 151 个块各报一次失败**）。
+    """
+    cands = []
+    for 变量 in ('LIGHT_MERGE', 'LIGHT_RUNTIME'):
+        p = os.environ.get(变量)
+        if p:
+            cands.append(p)
+    cands += [_ROOT, os.path.join(_ROOT, 'light-merge'), _LIB]
+    for c in cands:
+        if c and os.path.isfile(os.path.join(c, 'cli', 'light.py')):
+            return os.path.abspath(c)
+    return None
+
+
+_编译根 = _定位编译根()
+
+# ⚠️ 三个「根」必须分开（拆分前它们同根，故只需一个变量）：
+#   · 跑哪个解释器/脚本 → `_编译根`（含 cli/light.py，即 light-merge 检出）
+#   · 在哪个目录跑     → `_LIB`（积木库仓根；块内相对样例路径如 `评估/_冒烟样例.csv`、
+#                        数据/ 都相对它解析，见 索引.json 的 `样例` 字段）
+#   · 工位文件写哪     → `_编译根`。cli/light.py 会把**源文件所在目录**插到 sys.path[0]，
+#                        stdlib 引导据此向上找 `stdlib/`；工位写在积木库仓里会找不到
+#                        stdlib（`cannot import name … (unknown location)`，R61 实测）。
+_工位目录 = _编译根 or _LIB
 
 sys.path.insert(0, _LIB)
 import 类型 as T  # noqa: E402
@@ -170,7 +207,7 @@ def 跑一块(块, python=None, 工位=None):
 
     # 复用工位文件：逐块建删临时文件会被批量删除保护拦下，也没必要。
     # 并发时由调用方传入不同工位，避免多线程互相覆盖。
-    tmp = 工位 or os.path.join(_LIB, '_冒烟工位.light')
+    tmp = 工位 or os.path.join(_工位目录, '_冒烟工位.light')
     with open(tmp, 'w', encoding='utf-8') as f:
         f.write(源)
     if True:
@@ -179,10 +216,10 @@ def 跑一块(块, python=None, 工位=None):
         # 或写出 GBK 字节，被这里当成乱码/空输出误判成冒烟不通过。
         _子环境 = dict(os.environ, PYTHONIOENCODING='utf-8')
         r = subprocess.run(
-            [python or sys.executable, os.path.join(_ROOT, 'cli', 'light.py'),
+            [python or sys.executable, os.path.join(_编译根, 'cli', 'light.py'),
              'run', tmp],
             capture_output=True, text=True, encoding='utf-8',
-            errors='replace', cwd=_ROOT, timeout=120, env=_子环境)
+            errors='replace', cwd=_LIB, timeout=120, env=_子环境)
 
         out = (r.stdout or '').strip()
         err = (r.stderr or '').strip()
@@ -213,7 +250,7 @@ def 跑一块(块, python=None, 工位=None):
 def _并发跑(blocks, 并发):
     """槽位队列：每个工作线程独占一个工位文件，跑完归还，避免互相覆盖。"""
     槽 = queue.Queue()
-    工位表 = [os.path.join(_LIB, '_冒烟工位_%d.light' % i) for i in range(并发)]
+    工位表 = [os.path.join(_工位目录, '_冒烟工位_%d.light' % i) for i in range(并发)]
     for w in 工位表:
         槽.put(w)
 
@@ -236,6 +273,10 @@ def _并发跑(blocks, 并发):
 
 
 def 跑(领域=None, 块名=None, 详细=False, 并发=1):
+    if _编译根 is None:
+        raise RuntimeError(
+            '找不到光明编译器 cli/light.py。本仓是 R60 从 light-merge/积木库 拆出的独立仓，'
+            '不含编译器；请设 LIGHT_MERGE（或 LIGHT_RUNTIME）指向 light-merge 检出后重试。')
     with open(os.path.join(_LIB, '索引.json'), 'r', encoding='utf-8') as f:
         index = json.load(f)
     blocks = index.get('块') or []

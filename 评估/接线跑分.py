@@ -8,8 +8,8 @@
 不触碰 索引.json。
 
 用法：
-    python 积木库/评估/接线跑分.py
-    python 积木库/评估/接线跑分.py --详细
+    python 评估/接线跑分.py
+    python 评估/接线跑分.py --详细
 """
 
 import argparse

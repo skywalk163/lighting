@@ -12,10 +12,10 @@
   · 链路正确率：库内 top1 正确且不误兜底 + 库外正确判定兜底，占全部条目
 
 用法：
-    python 积木库/评估/跑分.py                       # 默认 embedding（装了 st 则真向量）
-    python 积木库/评估/跑分.py --策略 概念图 --详细    # 强制概念图向量，打印错误明细
-    python 积木库/评估/跑分.py --策略 语义 --标签 report_语义
-    python 积木库/评估/跑分.py --对比 评估/报告/xxx.json   # 与历史报告逐指标对比
+    python 评估/跑分.py                       # 默认 embedding（装了 st 则真向量）
+    python 评估/跑分.py --策略 概念图 --详细    # 强制概念图向量，打印错误明细
+    python 评估/跑分.py --策略 语义 --标签 report_语义
+    python 评估/跑分.py --对比 评估/报告/xxx.json   # 与历史报告逐指标对比
 
 安全性：只调用 select/validate/local_rule_block（纯判定），绝不调用 注册()，
 因此跑分不会向 索引.json 或 生成/ 写入任何东西。

@@ -34,7 +34,7 @@ from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _HERE = os.path.abspath(os.path.dirname(__file__))
-_库 = os.path.normpath(os.path.join(_HERE, '..'))          # 积木库/
+_库 = os.path.normpath(os.path.join(_HERE, '..'))          # 仓库根
 if _库 not in sys.path:
     sys.path.insert(0, _库)
 

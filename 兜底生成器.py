@@ -6,7 +6,7 @@
 chat/completions）按契约生成一块全新的段言积木；无 API key 时降级为本地规则
 生成器（覆盖 方差/标准差/中位数/绝对值 等常见但库内缺失的块）。
 
-生成的块写入 积木库/生成/<名称>.light，并注册进 索引.json，下次同需求零 token 复用。
+生成的块写入 生成/<名称>.light，并注册进 索引.json，下次同需求零 token 复用。
 
 配置（优先级从高到低，任选其一即可）：
   - 本地密钥文件：积木库/.env（OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL，不入库）

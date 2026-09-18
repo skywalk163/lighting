@@ -4,9 +4,9 @@
 记录结构化 `运行日志.jsonl`，并统计「成功沉淀」比例（生成块通过 体检+冒烟 且 组合运行成功）。
 
 用法：
-  python 积木库/评估/兜底首跑.py                # 跑全部 20 条，结果写 运行日志.jsonl
-  python 积木库/评估/兜底首跑.py --保留         # 不回滚索引/生成（真实沉淀，会改 索引.json）
-  python 积木库/评估/兜底首跑.py --只 阶乘       # 只跑含某关键字的意图
+  python 评估/兜底首跑.py                # 跑全部 20 条，结果写 运行日志.jsonl
+  python 评估/兜底首跑.py --保留         # 不回滚索引/生成（真实沉淀，会改 索引.json）
+  python 评估/兜底首跑.py --只 阶乘       # 只跑含某关键字的意图
 
 说明：
   - 走真实 `组合.py --json` 链路（含执行闭环与运行期兜底），与线上行为一致。
@@ -16,7 +16,7 @@
 """
 import os, sys, json, shutil, importlib.util, subprocess, argparse, time
 
-_LIB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 积木库/
+_LIB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根
 _PY = sys.executable  # 由调用方用 venv 解释器运行本脚本
 sys.path.insert(0, _LIB)
 

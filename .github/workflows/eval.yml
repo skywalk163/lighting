@@ -1,0 +1,81 @@
+name: 积木库五把尺子
+
+# 为什么单独一条流水线：本仓（lighting）是 R60 从 `light-merge/积木库` 拆出的独立积木库仓，
+# **仓根即原 `积木库/` 目录**。判的是「真实语料 / 扰动集 / 主基准 / 接线 / 体检 / 冒烟」五把尺子，
+# 与光明语言本体的 tests/ 是完全不同的扫描面，所以独立成一条流水线，不重复挂。
+#
+# 门槛是数据不是代码：`评估/门槛.json`（调门槛=改这里）；判定逻辑见 `评估/ci_eval.py`。
+#
+# ⚠️ 编译器不在本仓：冒烟/跑分要调 `cli/light.py`，而 `cli/` 属于 light-merge。所以这里先
+#    检出 light-merge 到 `_light/`，再用环境变量 `LIGHT_MERGE` 指过去 —— `评估/冒烟.py::
+#    _定位编译根()` 与 `组合.py::_定位运行时()` 都认这个变量（R61 新增，缺它会去跑一个
+#    不存在的 cli/light.py，151 块全报失败）。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!docs_site/**'
+      - '!archive/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**'
+      - '!**/*.md'
+      - '!docs_site/**'
+      - '!archive/**'
+  schedule:
+    # 每天 01:00 UTC ≈ 北京时间 09:00：即使没人提交，也盯一次环境漂移
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # GitHub Actions 的 job id 只允许字母/数字/下划线/连字符，中文 id 会在文件解析期直接报
+  # 「Invalid workflow file」——所以这里用 ASCII 名，展示名放在 workflow name 与各 step name。
+  five_metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出积木库（本仓）
+        uses: actions/checkout@v4
+
+      - name: 检出光明编译器（light-merge）
+        uses: actions/checkout@v4
+        with:
+          repository: skywalk163/light
+          path: _light
+        # 若 light 仓是私有的、默认 GITHUB_TOKEN 无跨仓读权限，把上面这步换成：
+        #   run: git clone --depth 1 https://github.com/skywalk163/light.git _light
+        # 并在仓库 Secret 里放一个有读权限的 token 拼进 URL。
+
+      - name: 装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 装积木可选依赖
+        # 少数块（转拼音 / 农历互转）依赖第三方包。装不上也不致命：冒烟会把它们标成
+        # 「缺依赖」单列，不计入可运行率分母（见 评估/冒烟.py v0.27）。
+        continue-on-error: true
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pypinyin lunardate opencc-python-reimplemented
+
+      - name: 五把尺子 + 硬门槛
+        env:
+          LIGHT_MERGE: ${{ github.workspace }}/_light
+        run: python 评估/ci_eval.py --并发 8
+
+      - name: 上传评测报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 积木库评测报告-${{ github.sha }}
+          path: 评估/报告/
+          retention-days: 30

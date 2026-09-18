@@ -19,9 +19,9 @@ CI 不会红。本脚本把日志读成可量化指标，供 `ci_eval` 进程内
   · 分类拆解    = 各 分类 下的触发/沉淀明细（定位哪类意图最容易失败）
 
 用法：
-  python 积木库/评估/兜底跑分.py                 # 读默认 运行日志.jsonl
-  python 积木库/评估/兜底跑分.py --日志 运行日志_v8_wnFyfF_15of20.jsonl
-  python 积木库/评估/兜底跑分.py --最小行数 5 --阈值 0.6
+  python 评估/兜底跑分.py                 # 读默认 运行日志.jsonl
+  python 评估/兜底跑分.py --日志 运行日志_v8_wnFyfF_15of20.jsonl
+  python 评估/兜底跑分.py --最小行数 5 --阈值 0.6
 """
 
 import argparse

@@ -21,12 +21,12 @@
     key 也不会走网络），否则主基准会随模型漂移；确需真实 LLM 时加 --允许LLM。
 
 用法：
-    python 积木库/评估/ci_eval.py                  # 全量，写 报告/ci_eval.json
-    python 积木库/评估/ci_eval.py --并发 8          # 冒烟并行（CI 推荐，2m50s → 25s）
-    python 积木库/评估/ci_eval.py --快              # 跳过冒烟，秒级回归（改选块器时用）
-    python 积木库/评估/ci_eval.py --详细            # 连带打印各尺子原始输出
-    python 积木库/评估/ci_eval.py --每日            # 另存 报告/ci_daily.json + 追加历史
-    python 积木库/评估/ci_eval.py --对比 积木库/评估/报告/ci_eval.json
+    python 评估/ci_eval.py                  # 全量，写 报告/ci_eval.json
+    python 评估/ci_eval.py --并发 8          # 冒烟并行（CI 推荐，2m50s → 25s）
+    python 评估/ci_eval.py --快              # 跳过冒烟，秒级回归（改选块器时用）
+    python 评估/ci_eval.py --详细            # 连带打印各尺子原始输出
+    python 评估/ci_eval.py --每日            # 另存 报告/ci_daily.json + 追加历史
+    python 评估/ci_eval.py --对比 评估/报告/ci_eval.json
 
 退出码：0 全绿 ｜ 1 有闸门未过 ｜ 2 尺子执行本身出错
 """

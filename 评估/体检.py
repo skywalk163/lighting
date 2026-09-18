@@ -50,7 +50,8 @@ _导出行 = re.compile(r'^\s*导出\s+(\S+)\s*$', re.M)
 #   · 用 git check-ignore 自动放行合法忽略目录（生成/待审、生成/_验证、脚手架），
 #     不硬编码忽略名单，未来新增忽略目录也无需改这里。
 #   · 非 git 环境（无 .git / git 不可用）整体跳过 E8，不误报、不崩溃。
-#   · 已跟踪集只取一次（git ls-files -- 积木库/），避免逐块 subprocess。
+#   · 已跟踪集只取一次（git ls-files -- .；R60 拆分后本仓根即原 积木库/，故 pathspec 从
+#     `积木库/` 改成 `.`，否则空集 → E8 全量误报），避免逐块 subprocess。
 _仓库根 = None
 _仓库根就绪 = False
 _已跟踪集 = None
@@ -81,7 +82,7 @@ def _取已跟踪集():
             # -c core.quotepath=0：关闭非 ASCII 路径的八进制转义，否则中文路径
             # 会变成 "\347\..." 串，与真实 git_rel 比对失败 → 全部误报。
             r = subprocess.run(['git', '-c', 'core.quotepath=0', 'ls-files',
-                                '--', '积木库/'],
+                                '--', '.'],
                                cwd=root, capture_output=True, text=True, timeout=30)
             _已跟踪集 = set(r.stdout.splitlines()) if r.returncode == 0 else None
         except Exception:
